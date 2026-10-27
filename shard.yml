@@ -1,0 +1,8 @@
+name: carat
+version: 0.1.0
+authors:
+  - Oleg Sokolov
+description: Global binary installer for Crystal shards — gem install UX for executables
+license: MIT
+executables:
+  - carat

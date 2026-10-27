@@ -1,0 +1,137 @@
+# carat — bootstrap manifest for crosspack.
+#
+# The FIRST install of carat goes through crosspack:
+#
+#   gem install crosspack
+#   crosspack deps              # verify/install build deps (crystal, git, shards)
+#   crosspack build             # compile carat into builds/
+#   crosspack pack              # distro package (deb/rpm/PKGBUILD/MSI)
+#   crosspack install           # install this host's package
+#
+# Afterwards carat updates itself (and every other installed shard):
+#
+#   carat update OrelSokolov/carat
+#
+# The self-update lands in ~/.carat/bin/car at — keep ~/.carat/bin ahead of
+# /usr/local/bin in PATH so the fresh binary wins over the packaged one.
+#
+# The version follows shard.yml — bump both together.
+
+name: carat
+version: 0.1.0
+
+build:
+  output: builds
+
+  # Host-axis build dependencies: what the build machine needs.
+  deps:
+    crystal:
+      hosts:
+        debian:
+          verify: crystal --version
+          install: curl -fsSL https://crystal-lang.org/install.sh | sudo bash
+        fedora:
+          verify: crystal --version
+          install: sudo dnf install -y crystal
+        arch:
+          verify: crystal --version
+          install: sudo pacman -S --needed crystal
+        darwin:
+          verify: crystal --version
+          install: brew install crystal
+        "*":
+          verify: crystal --version
+
+    git:                      # carat clones shards with git
+      hosts:
+        debian:
+          verify: git --version
+          install: sudo apt-get install -y git
+        fedora:
+          verify: git --version
+          install: sudo dnf install -y git
+        arch:
+          verify: git --version
+          install: sudo pacman -S --needed git
+        darwin:
+          verify: git --version
+          install: brew install git
+        "*":
+          verify: git --version
+
+    shards:                   # no distro package — ships with Crystal
+      hosts:
+        "*":
+          verify: shards --version
+
+  matrix:
+    - id: linux
+      build: linux/amd64
+      steps:
+        - mkdir -p bin
+        - crystal build --release --no-color src/carat.cr -o bin/carat
+      artifacts:
+        from: bin
+        include: ["carat"]
+        to: [debian-12, ubuntu-22.04, ubuntu-24.04, ubuntu-25.10, fedora-41, arch]
+
+    - id: macos
+      build: darwin/arm64
+      steps:
+        - mkdir -p bin
+        - crystal build --release --no-color src/carat.cr -o bin/carat
+      artifacts:
+        from: bin
+        include: ["carat"]
+        to: [macos]
+
+    - id: windows
+      build: windows/amd64
+      steps:
+        - mkdir -p bin
+        - crystal build --release --no-color src/carat.cr -o bin/carat.exe
+      artifacts:
+        from: bin
+        include: ["*.exe"]
+        to: [windows-11.0]
+        mode: copy              # symlinks need dev-mode/admin on Windows
+
+# Runtime-axis dependencies: carat runs `git clone` at runtime (it also
+# invokes the crystal compiler, which has no distro package — installed via
+# crystal-lang.org or brew; see build.deps above).
+deps:
+  version: 1
+  git:
+    targets:
+      debian: { "*": [git] }
+      ubuntu: { "*": [git] }
+      fedora: { "*": [git] }
+      arch: { "*": [git] }
+      macos: system            # git ships with the Xcode Command Line Tools
+      windows: system          # Git for Windows, installed separately
+
+package:
+  maintainer: Oleg Sokolov
+  summary: carat — global binary installer for Crystal shards
+  description: |-
+    carat installs release binaries of Crystal shards system-wide:
+    `carat install owner/repo` clones the shard from GitHub, builds its
+    `executables:` with `crystal build --release` and puts
+    self-contained binaries into ~/.carat/bin.
+    Inside a project, `carat install` delegates to `shards install` and
+    builds executables into ./.carat/bin; `carat exec` runs commands with
+    that directory prepended to PATH.
+    First install via crosspack (`gem install crosspack`), updates via
+    `carat update carat` itself.
+  sources: builds
+  prefix: usr/local
+  payload:
+    # Windows binaries carry .exe — the common key stays extension-less
+    # and resolves to the real file name per target.
+    carat:
+      windows: carat.exe
+      "*": carat
+  executables:
+    - carat
+  links:
+    bin/carat: ../lib/carat/carat

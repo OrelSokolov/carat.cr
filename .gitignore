@@ -1,0 +1,11 @@
+# build artifacts
+/bin/
+/builds/
+/crosspacks/
+
+# shards
+/lib/
+/shard.lock
+
+# local carat state
+/.carat/

@@ -143,6 +143,10 @@ module Carat
       File.join(carat_home, "bin")
     end
 
+    def self.examples_dir : String
+      File.join(carat_home, "examples")
+    end
+
     def self.shards_dir : String
       File.join(carat_home, "shards")
     end
@@ -169,6 +173,10 @@ module Carat
 
     def self.project_bin : String
       File.join(Dir.current, ".carat", "bin")
+    end
+
+    def self.project_examples : String
+      File.join(Dir.current, ".carat", "examples")
     end
 
     def self.ensure_global_dirs : Nil
@@ -256,8 +264,10 @@ module Carat
     getter name : String
     getter version : String
     getter binaries : Array(BinarySpec)
+    getter examples : Array(BinarySpec)
 
-    def initialize(@name : String, @version : String, @binaries : Array(BinarySpec))
+    def initialize(@name : String, @version : String,
+                   @binaries : Array(BinarySpec), @examples : Array(BinarySpec))
     end
 
     def self.from_file(path : String) : self
@@ -272,13 +282,14 @@ module Carat
       name = doc["name"]?.try &.as_s?
       raise Error.new("shard.yml has no name") unless name
       version = doc["version"]?.try &.as_s? || "0.0.0"
-      new(name, version, parse_binaries(doc))
+      new(name, version, parse_section(doc, "binaries"), parse_section(doc, "examples"))
     end
 
-    # `binaries:` is a list of names (main defaults to src/<name>.cr) or a
-    # mapping name -> spec (main/prebuild/flags/link_flags).
-    private def self.parse_binaries(doc : YAML::Any) : Array(BinarySpec)
-      node = doc["binaries"]?
+    # A `binaries:`/`examples:` section is a list of names (main defaults
+    # to src/<name>.cr) or a mapping name -> spec
+    # (main/prebuild/flags/link_flags).
+    private def self.parse_section(doc : YAML::Any, key : String) : Array(BinarySpec)
+      node = doc[key]?
       specs = [] of BinarySpec
       return specs if node.nil?
       case node.raw
@@ -416,13 +427,24 @@ module Carat
     if meta.binaries.empty?
       raise Error.new("#{meta.name}: no binaries: entry in shard.yml — nothing to build")
     end
+    build_specs(meta, meta.binaries, dir, bin_dir)
+  end
+
+  # The optional examples: section — same build pipeline as binaries:, but
+  # only built with --with-examples (never on a plain `carat install`).
+  def self.build_examples(meta : ShardMeta, dir : String, examples_dir : String) : Array(String)
+    build_specs(meta, meta.examples, dir, examples_dir)
+  end
+
+  private def self.build_specs(meta : ShardMeta, specs : Array(ShardMeta::BinarySpec),
+                               dir : String, out_dir : String) : Array(String)
     unless shell.which("crystal")
       raise Error.new("crystal compiler not found in PATH")
     end
-    Dir.mkdir_p(bin_dir)
+    Dir.mkdir_p(out_dir)
     os = os_family
     built = [] of String
-    meta.binaries.each do |bin|
+    specs.each do |bin|
       entry = File.join(dir, bin.main)
       unless File.exists?(entry)
         raise Error.new("#{meta.name}: main for binary #{bin.name} not found: #{bin.main}")
@@ -433,7 +455,7 @@ module Carat
           raise Error.new("prebuild failed for #{bin.name}: #{prebuild}")
         end
       end
-      target = File.join(bin_dir, bin.name)
+      target = File.join(out_dir, bin.name)
       overwritten = File.exists?(target)
       if overwritten
         puts "WARNING: OVERWRITING WITH NEW BINARY: #{target}"
@@ -471,7 +493,7 @@ module Carat
   # ------------------------------------------------------------------
 
   class GlobalInstaller
-    def initialize(@src : String)
+    def initialize(@src : String, @with_examples : Bool = false)
     end
 
     def install : Nil
@@ -481,6 +503,7 @@ module Carat
       previous = installed_version(meta.name)
       store = promote(meta, staged)
       Carat.build_binaries(meta, store, Paths.bin_dir)
+      build_examples(meta, store)
       File.write(Paths.current_pointer(meta.name), meta.version)
       Carat.logger.log("install #{meta.name} #{meta.version} from #{source.location} (previous: #{previous || "none"})")
       puts "Installed #{meta.name} #{meta.version} -> #{Paths.bin_dir}"
@@ -509,9 +532,23 @@ module Carat
       puts "Updating #{meta.name} #{installed} -> #{meta.version}"
       store = promote(meta, staged)
       Carat.build_binaries(meta, store, Paths.bin_dir)
+      build_examples(meta, store)
       File.write(Paths.current_pointer(meta.name), meta.version)
       Carat.logger.log("update #{meta.name} #{installed} -> #{meta.version} from #{source.location}")
       puts "Updated #{meta.name} #{meta.version} -> #{Paths.bin_dir}"
+    end
+
+    # --with-examples: build the optional examples: section too, into
+    # ~/.carat/examples (separate from the PATH-facing bin dir).
+    private def build_examples(meta : ShardMeta, store : String) : Nil
+      return unless @with_examples
+      if meta.examples.empty?
+        puts "#{meta.name}: no examples: entry in shard.yml, skipping examples"
+        return
+      end
+      built = Carat.build_examples(meta, store, Paths.examples_dir)
+      Carat.logger.log("examples #{meta.name} #{meta.version} -> #{Paths.examples_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
+      puts "Examples -> #{Paths.examples_dir}"
     end
 
     private def stage(source : Source) : {ShardMeta, String}
@@ -554,7 +591,7 @@ module Carat
   # ------------------------------------------------------------------
 
   class ProjectInstaller
-    def initialize(@shards_command : String = "install")
+    def initialize(@shards_command : String = "install", @with_examples : Bool = false)
     end
 
     def run : Nil
@@ -584,6 +621,15 @@ module Carat
       built = Carat.build_binaries(meta, Dir.current, bin_dir)
       Carat.logger.log("project #{@shards_command} #{meta.name} #{meta.version} -> #{bin_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
       puts "Installed #{meta.name} #{meta.version} -> #{bin_dir}"
+      return unless @with_examples
+      if meta.examples.empty?
+        puts "#{meta.name}: no examples: entry in shard.yml, skipping examples"
+        return
+      end
+      examples_dir = Paths.project_examples
+      built = Carat.build_examples(meta, Dir.current, examples_dir)
+      Carat.logger.log("project examples #{@shards_command} #{meta.name} #{meta.version} -> #{examples_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
+      puts "Examples -> #{examples_dir}"
     end
   end
 
@@ -627,12 +673,18 @@ module Carat
       carat completion install
                             Shell autocompletion (bash/fish; zsh hint)
 
+    Options:
+      --with-examples      Also build the optional examples: section
+                            (global: ~/.carat/examples, project: ./.carat/examples)
+
     Directories:
       ~/.carat/bin/                  global binaries (only entry points)
+      ~/.carat/examples/             global example binaries (--with-examples)
       ~/.carat/shards/<name>/<ver>/  global source store, per version
       ~/.carat/shards/<name>/current installed version pointer
       ~/.carat/logs/carat.log        install/overwrite/update audit log
       ./.carat/bin/                  project binaries
+      ./.carat/examples/             project example binaries (--with-examples)
   TEXT
 
   # Подкоманды для автокомплита; "__complete" скрытая — не показывается.
@@ -652,16 +704,20 @@ module Carat
 
     case command = argv[0]?
     when "install"
-      if src = argv[1]?
-        GlobalInstaller.new(src).install
+      rest = argv[1..]
+      with_examples = !rest.delete("--with-examples").nil?
+      if src = rest[0]?
+        GlobalInstaller.new(src, with_examples).install
       else
-        ProjectInstaller.new("install").run
+        ProjectInstaller.new("install", with_examples).run
       end
     when "update"
-      if src = argv[1]?
-        GlobalInstaller.new(src).update
+      rest = argv[1..]
+      with_examples = !rest.delete("--with-examples").nil?
+      if src = rest[0]?
+        GlobalInstaller.new(src, with_examples).update
       else
-        ProjectInstaller.new("update").run
+        ProjectInstaller.new("update", with_examples).run
       end
     when "exec"
       cmd = argv[1]?
@@ -719,7 +775,8 @@ module Carat
     case typed.first?
     when nil          then COMMANDS + ["--help", "--version"]
     when "exec"       then typed.size == 1 ? exec_candidates : [] of String
-    when "update"     then installed_shards
+    when "install"    then typed.size == 1 ? ["--with-examples"] : [] of String
+    when "update"     then installed_shards + ["--with-examples"]
     when "completion" then ["install"]
     else                   [] of String
     end

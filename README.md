@@ -86,6 +86,9 @@ case.
 | `carat exec <cmd> [args]`| Like `bundle exec`: runs `<cmd>` with `./.carat/bin` prepended to PATH |
 | `carat completion install` | Install shell autocompletion (bash / fish / zsh)                       |
 
+Both `install` and `update` accept `--with-examples` to also build the
+optional `examples:` section (see below).
+
 ## Make your shard instantly installable
 
 Add a `binaries:` section to shard.yml — carat's delivery contract. The
@@ -126,6 +129,27 @@ up. No releases page, no tarballs, no install scripts.
 normal shard — `shards install` / `shards build` keep working (verified
 with shards 0.20).
 
+### Optional examples: `examples:`
+
+`examples:` is the same contract as `binaries:` (list or full mapping
+form), but for demo/sample binaries. It is **never built by default** —
+recursive installs would balloon quickly — only on demand:
+
+```bash
+carat install owner/repo --with-examples   # global: binaries in ~/.carat/bin,
+                                           # examples in ~/.carat/examples
+carat install --with-examples              # project: examples in ./.carat/examples
+```
+
+```yaml
+examples:
+  widgets_gallery:
+    main: examples/widgets_gallery.cr
+```
+
+Example binaries land in a separate dir (`~/.carat/examples` /
+`./.carat/examples`), so they never pollute your PATH.
+
 ## What happens on install
 
 1. **Fetch** — `git clone --depth 1` into a staging dir (local directories
@@ -145,11 +169,13 @@ with shards 0.20).
 
 ```
 ~/.carat/bin/                    global binaries (entry points only)
+~/.carat/examples/               global example binaries (--with-examples)
 ~/.carat/shards/<name>/<ver>/    source store, per version
 ~/.carat/shards/<name>/current   installed version pointer
 ~/.carat/logs/carat.log          install/overwrite/update audit log
 ~/.carat/tmp/                    staging for clones
 ./.carat/bin/                    project binaries (carat install / carat exec)
+./.carat/examples/               project example binaries (--with-examples)
 ```
 
 Only self-contained binaries ever go into the bin dir — no assets, no

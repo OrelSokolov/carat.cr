@@ -86,8 +86,15 @@ case.
 | `carat exec <cmd> [args]`| Like `bundle exec`: runs `<cmd>` with `./.carat/bin` prepended to PATH |
 | `carat completion install` | Install shell autocompletion (bash / fish / zsh)                       |
 
-Both `install` and `update` accept `--with-examples` to also build the
-optional `examples:` section (see below).
+Both `install` and `update` accept:
+
+- `--with-examples` — also build the optional `examples:` section (see below)
+- `--system` — install binaries into the system directory instead of
+  `~/.carat/bin`: `/usr/local/bin` on Linux/macOS (on PATH by default),
+  `%ProgramFiles%\carat\bin` + the machine PATH on Windows. Requires
+  root/Administrator; without the rights carat fails fast — before any
+  clone or build — with a clear error. The version store stays in
+  `~/.carat/shards`, so `carat update` keeps working.
 
 ## Make your shard instantly installable
 
@@ -149,6 +156,30 @@ examples:
 
 Example binaries land in a separate dir (`~/.carat/examples` /
 `./.carat/examples`), so they never pollute your PATH.
+
+### Build flags from dependencies
+
+A shard's binaries often link C libraries through binding shards. A
+**dependency** may declare top-level `flags:` / `link_flags:` in its own
+shard.yml (same per-OS selector format), and carat applies them when
+building binaries of any shard that depends on it:
+
+```yaml
+# lib/some_binding/shard.yml
+name: some_binding
+version: 1.0.0
+flags:
+  "*": [-DSOME_BINDING=1]
+link_flags:
+  linux: [-lsome]
+```
+
+Flags are collected recursively from `lib/**/shard.yml` (populated by
+`shards install`; in global installs — by a `prebuild:` step), merged
+with the binary's own flags and deduplicated (own flags first, order
+preserved). The merged list is printed during the build, so what the
+compiler actually received is always visible. `shards` ignores these
+keys, so the dependency stays a normal shard.
 
 ## What happens on install
 

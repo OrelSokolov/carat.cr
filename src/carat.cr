@@ -8,9 +8,10 @@
 
 require "yaml"
 require "file_utils"
+require "colorize"
 
 module Carat
-  VERSION = "0.3.1"
+  VERSION = "0.4.0"
 
   class Error < Exception
   end
@@ -118,6 +119,20 @@ module Carat
     !!File.info?(path).try { |info| (info.permissions.value & 0o111) != 0 }
   end
 
+  # Цвета только для интерактивного вывода: NO_COLOR и редирект в пайп
+  # отключают escape-коды (иначе они засоряют логи и вывод в файлах).
+  def self.colors? : Bool
+    !ENV["NO_COLOR"]? && STDOUT.tty? && STDERR.tty?
+  end
+
+  def self.paint(line : String, color : Colorize::Color) : String
+    colors? ? line.colorize(color).to_s : line
+  end
+
+  def self.warning(line : String) : Nil
+    puts paint(line, :yellow)
+  end
+
   def self.env : Ports::Environment
     @@env ||= {% if flag?(:windows) %}Ports::WindowsEnvironment.new{% else %}Ports::PosixEnvironment.new{% end %}
   end
@@ -141,6 +156,19 @@ module Carat
 
     def self.bin_dir : String
       File.join(carat_home, "bin")
+    end
+
+    # Куда кладёт бинарники --system: /usr/local/bin на Unix (каталог для
+    # вручную установленного софта, на PATH по умолчанию; /bin на macOS
+    # read-only из-за SIP, на Linux — территория пакетного менеджера) и
+    # %ProgramFiles%\carat\bin на Windows.
+    def self.system_bin_dir : String
+      {% if flag?(:windows) %}
+        program_files = ENV["ProgramFiles"]? || ENV["ProgramW6432"]? || "C:\\Program Files"
+        File.join(program_files, "carat", "bin")
+      {% else %}
+        "/usr/local/bin"
+      {% end %}
     end
 
     def self.examples_dir : String
@@ -344,6 +372,23 @@ module Carat
     end
   end
 
+  # Рекурсивный сбор флагов сборки из зависимостей: библиотека (например,
+  # C-привязка) может объявить top-level flags:/link_flags: в своём
+  # shard.yml — carat подхватывает их при сборке бинарников любого шарда,
+  # который от неё зависит. Источник — lib/**/shard.yml (после shards
+  # install; у глобальной установки lib/ появляется через prebuild).
+  # Glob не следует симлинкам — циклов в раскладке shards не будет.
+  def self.collect_dep_flags(dir : String, os : String) : {Array(String), Array(String)}
+    flags = [] of String
+    link_flags = [] of String
+    Dir.glob(File.join(dir, "lib", "**", "shard.yml")).sort.each do |path|
+      doc = YAML.parse(File.read(path)) rescue next
+      flags.concat(select_flag_list(doc["flags"]?, os))
+      link_flags.concat(select_flag_list(doc["link_flags"]?, os))
+    end
+    {flags, link_flags}
+  end
+
   # ------------------------------------------------------------------
   # Ядро: резолв источника
   # ------------------------------------------------------------------
@@ -423,6 +468,25 @@ module Carat
     end
   end
 
+  # Проверка записываемости каталога ДО клонирования и release-сборки:
+  # probe-файл создаётся и удаляется. На Unix прикладная ошибка — EACCES
+  # от mkdir или File.write; обе проходят как File::Error/Errno.
+  def self.check_writable_dir(dir : String) : Nil
+    begin
+      Dir.mkdir_p(dir)
+      probe = File.join(dir, ".carat-probe-#{Random::Secure.hex(4)}")
+      File.write(probe, "")
+      File.delete(probe)
+    rescue e : File::Error
+      hint = {% if flag?(:windows) %}
+               "run your terminal as Administrator"
+             {% else %}
+               "rerun with sudo, or install without --system"
+             {% end %}
+      raise Error.new("no write permission for #{dir} (#{e.message}) — #{hint}")
+    end
+  end
+
   def self.build_binaries(meta : ShardMeta, dir : String, bin_dir : String) : Array(String)
     if meta.binaries.empty?
       raise Error.new("#{meta.name}: no binaries: entry in shard.yml — nothing to build")
@@ -443,6 +507,10 @@ module Carat
     end
     Dir.mkdir_p(out_dir)
     os = os_family
+    dep_flags, dep_link_flags = collect_dep_flags(dir, os)
+    unless dep_flags.empty? && dep_link_flags.empty?
+      puts "Dep flags (lib/, uniq): flags=#{dep_flags.uniq.inspect} link_flags=#{dep_link_flags.uniq.inspect}"
+    end
     built = [] of String
     specs.each do |bin|
       entry = File.join(dir, bin.main)
@@ -458,11 +526,14 @@ module Carat
       target = File.join(out_dir, bin.name)
       overwritten = File.exists?(target)
       if overwritten
-        puts "WARNING: OVERWRITING WITH NEW BINARY: #{target}"
+        warning("WARNING: OVERWRITING WITH NEW BINARY: #{target}")
       end
       puts "Building #{bin.name} (#{meta.name} #{meta.version}, release)..."
-      args = ["build", "--release", "--no-color"] + select_flag_list(bin.flags, os)
-      link_flags = absolutize_link_flags(select_flag_list(bin.link_flags, os), dir)
+      # Свои флаги бинарника + флаги зависимостей, uniq с сохранением порядка
+      # (свои первыми — селекторы зависимостей их не перекрывают).
+      flags = (select_flag_list(bin.flags, os) + dep_flags).uniq
+      link_flags = absolutize_link_flags((select_flag_list(bin.link_flags, os) + dep_link_flags).uniq, dir)
+      args = ["build", "--release", "--no-color"] + flags
       args += ["--link-flags", link_flags.join(' ')] unless link_flags.empty?
       # Сборка во временный файл + rename: прямой -o поверх запущенного
       # бинарника падает с ETXTBSY (актуально для `carat update carat`).
@@ -493,25 +564,28 @@ module Carat
   # ------------------------------------------------------------------
 
   class GlobalInstaller
-    def initialize(@src : String, @with_examples : Bool = false)
+    def initialize(@src : String, @with_examples : Bool = false, @system : Bool = false)
     end
 
     def install : Nil
       source = Carat.resolve_source(@src)
       Paths.ensure_global_dirs
+      bin_dir = target_bin_dir
       meta, staged = stage(source)
       previous = installed_version(meta.name)
       store = promote(meta, staged)
-      Carat.build_binaries(meta, store, Paths.bin_dir)
+      Carat.build_binaries(meta, store, bin_dir)
       build_examples(meta, store)
       File.write(Paths.current_pointer(meta.name), meta.version)
-      Carat.logger.log("install #{meta.name} #{meta.version} from #{source.location} (previous: #{previous || "none"})")
-      puts "Installed #{meta.name} #{meta.version} -> #{Paths.bin_dir}"
+      Carat.logger.log("install #{meta.name} #{meta.version} from #{source.location} to #{bin_dir} (previous: #{previous || "none"})")
+      after_system_install(bin_dir)
+      puts "Installed #{meta.name} #{meta.version} -> #{bin_dir}"
     end
 
     def update : Nil
       source = Carat.resolve_source(@src)
       Paths.ensure_global_dirs
+      bin_dir = target_bin_dir
       meta, staged = stage(source)
       installed = installed_version(meta.name)
       unless installed
@@ -531,12 +605,44 @@ module Carat
       end
       puts "Updating #{meta.name} #{installed} -> #{meta.version}"
       store = promote(meta, staged)
-      Carat.build_binaries(meta, store, Paths.bin_dir)
+      Carat.build_binaries(meta, store, bin_dir)
       build_examples(meta, store)
       File.write(Paths.current_pointer(meta.name), meta.version)
       Carat.logger.log("update #{meta.name} #{installed} -> #{meta.version} from #{source.location}")
-      puts "Updated #{meta.name} #{meta.version} -> #{Paths.bin_dir}"
+      after_system_install(bin_dir)
+      puts "Updated #{meta.name} #{meta.version} -> #{bin_dir}"
     end
+
+    # Каталог назначения: --system кладёт бинарники системно; стор версий и
+    # current-указатель в любом случае остаются в ~/.carat/shards.
+    private def target_bin_dir : String
+      dir = @system ? Paths.system_bin_dir : Paths.bin_dir
+      Carat.check_writable_dir(dir) if @system
+      dir
+    end
+
+    # Windows + --system: каталог установки нужно добавить в системный
+    # (Machine) PATH — как rake install, но на уровне машины. Идемпотентно;
+    # неудача не фатальна (бинарники уже установлены).
+    {% if flag?(:windows) %}
+      private def after_system_install(bin_dir : String) : Nil
+        return unless @system
+        script = <<~PS
+          $bin = '#{bin_dir.gsub("/", "\\")}'
+          $path = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+          if (-not (($path -split ';') -contains $bin)) {
+            [Environment]::SetEnvironmentVariable('Path', ($path + ';' + $bin), 'Machine')
+            Write-Output "PATH: added $bin to the system PATH"
+          }
+        PS
+        unless Carat.shell.run("powershell", ["-NoProfile", "-Command", script.strip], nil)
+          Carat.warning("WARNING: could not add #{bin_dir} to the system PATH — add it manually")
+        end
+      end
+    {% else %}
+      private def after_system_install(bin_dir : String) : Nil
+      end
+    {% end %}
 
     # --with-examples: build the optional examples: section too, into
     # ~/.carat/examples (separate from the PATH-facing bin dir).
@@ -676,6 +782,11 @@ module Carat
     Options:
       --with-examples      Also build the optional examples: section
                             (global: ~/.carat/examples, project: ./.carat/examples)
+      --system             Install binaries into the system dir instead of
+                            ~/.carat/bin (Unix: /usr/local/bin, Windows:
+                            %ProgramFiles%\\carat\\bin + system PATH).
+                            Needs root/Administrator — fails fast with a
+                            clear error if not.
 
     Directories:
       ~/.carat/bin/                  global binaries (only entry points)
@@ -706,17 +817,21 @@ module Carat
     when "install"
       rest = argv[1..]
       with_examples = !rest.delete("--with-examples").nil?
+      system = !rest.delete("--system").nil?
       if src = rest[0]?
-        GlobalInstaller.new(src, with_examples).install
+        GlobalInstaller.new(src, with_examples, system).install
       else
+        raise Error.new("--system is only valid for global installs (carat install <src>)") if system
         ProjectInstaller.new("install", with_examples).run
       end
     when "update"
       rest = argv[1..]
       with_examples = !rest.delete("--with-examples").nil?
+      system = !rest.delete("--system").nil?
       if src = rest[0]?
-        GlobalInstaller.new(src, with_examples).update
+        GlobalInstaller.new(src, with_examples, system).update
       else
+        raise Error.new("--system is only valid for global installs (carat update <src>)") if system
         ProjectInstaller.new("update", with_examples).run
       end
     when "exec"
@@ -775,8 +890,8 @@ module Carat
     case typed.first?
     when nil          then COMMANDS + ["--help", "--version"]
     when "exec"       then typed.size == 1 ? exec_candidates : [] of String
-    when "install"    then typed.size == 1 ? ["--with-examples"] : [] of String
-    when "update"     then installed_shards + ["--with-examples"]
+    when "install"    then typed.size == 1 ? ["--with-examples", "--system"] : [] of String
+    when "update"     then installed_shards + ["--with-examples", "--system"]
     when "completion" then ["install"]
     else                   [] of String
     end
@@ -839,6 +954,6 @@ end
 begin
   Carat.run(ARGV)
 rescue e : Carat::Error
-  STDERR.puts "carat: #{e.message}"
+  STDERR.puts Carat.paint("carat: #{e.message}", :red)
   exit 1
 end

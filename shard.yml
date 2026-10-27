@@ -1,8 +1,8 @@
 name: carat
-version: 0.2.1
+version: 0.3.0
 authors:
   - Oleg Sokolov
-description: Global binary installer for Crystal shards — gem install UX for executables
+description: Package manager for Crystal — RubyGems-style workflow for shard binaries
 license: MIT
-executables:
+binaries:
   - carat

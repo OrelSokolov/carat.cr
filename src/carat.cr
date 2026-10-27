@@ -1,6 +1,6 @@
 # carat — глобальный установщик бинарников для Crystal-шардов.
 #
-# `carat install owner/repo` тащит шард с GitHub, собирает `executables:`
+# `carat install owner/repo` тащит шард с GitHub, собирает `binaries:`
 # через `crystal build --release` и кладёт самодостаточные бинарники в ~/.carat/bin.
 #
 # Архитектура: порты и адаптеры (по образцу Egui::SystemPorts) — ядро не знает
@@ -10,7 +10,7 @@ require "yaml"
 require "file_utils"
 
 module Carat
-  VERSION = "0.2.1"
+  VERSION = "0.3.0"
 
   class Error < Exception
   end
@@ -53,6 +53,7 @@ module Carat
 
     abstract class Shell
       abstract def run(command : String, args : Array(String), cwd : String?) : Bool
+      abstract def run_command(command : String, cwd : String?) : Bool
       abstract def which(command : String) : String?
     end
 
@@ -62,6 +63,20 @@ module Carat
           chdir: cwd,
           output: Process::Redirect::Inherit,
           error: Process::Redirect::Inherit).success?
+      end
+
+      # A shell command line (prebuild: in binaries:) — run through the
+      # platform shell so pipes/globs/env assignments work.
+      def run_command(command : String, cwd : String?) : Bool
+        {% if flag?(:windows) %}
+          Process.run("cmd", ["/c", command], chdir: cwd,
+            output: Process::Redirect::Inherit,
+            error: Process::Redirect::Inherit).success?
+        {% else %}
+          Process.run("sh", ["-c", command], chdir: cwd,
+            output: Process::Redirect::Inherit,
+            error: Process::Redirect::Inherit).success?
+        {% end %}
       end
 
       def which(command : String) : String?
@@ -213,11 +228,36 @@ module Carat
   # ------------------------------------------------------------------
 
   class ShardMeta
+    # One `binaries:` entry — carat's own delivery contract (shards'
+    # executables:/targets: say nothing about how to build):
+    #   binaries:
+    #     tool:
+    #       main: src/tool.cr          # default: src/<name>.cr
+    #       prebuild: rake build:native # command in the shard root
+    #       flags:                      # crystal build flags
+    #         "*": [--something]
+    #         darwin: [-DSOME=1]
+    #       link_flags:                 # linker flags, per-OS where they differ
+    #         "*": [-Llib]
+    #         linux: [lib/libfoo.a]
+    #         windows: [/LIBPATH:lib]
+    class BinarySpec
+      getter name : String
+      getter main : String
+      getter prebuild : String?
+      getter flags : YAML::Any?
+      getter link_flags : YAML::Any?
+
+      def initialize(@name : String, @main : String, @prebuild : String?,
+                     @flags : YAML::Any?, @link_flags : YAML::Any?)
+      end
+    end
+
     getter name : String
     getter version : String
-    getter executables : Array(String)
+    getter binaries : Array(BinarySpec)
 
-    def initialize(@name : String, @version : String, @executables : Array(String))
+    def initialize(@name : String, @version : String, @binaries : Array(BinarySpec))
     end
 
     def self.from_file(path : String) : self
@@ -232,12 +272,64 @@ module Carat
       name = doc["name"]?.try &.as_s?
       raise Error.new("shard.yml has no name") unless name
       version = doc["version"]?.try &.as_s? || "0.0.0"
-      executables = if exes = doc["executables"]?
-        exes.as_a?.try { |a| a.map(&.as_s?).compact } || [] of String
-      else
-        [] of String
+      new(name, version, parse_binaries(doc))
+    end
+
+    # `binaries:` is a list of names (main defaults to src/<name>.cr) or a
+    # mapping name -> spec (main/prebuild/flags/link_flags).
+    private def self.parse_binaries(doc : YAML::Any) : Array(BinarySpec)
+      node = doc["binaries"]?
+      specs = [] of BinarySpec
+      return specs if node.nil?
+      case node.raw
+      when Array
+        node.as_a.each do |item|
+          name = item.as_s
+          specs << BinarySpec.new(name, File.join("src", "#{name}.cr"), nil, nil, nil)
+        end
+      when Hash
+        node.as_h.each do |key, spec|
+          name = key.as_s
+          case spec.raw
+          when String
+            specs << BinarySpec.new(name, spec.as_s, nil, nil, nil)
+          when Hash
+            main = spec["main"]?.try(&.as_s?) || File.join("src", "#{name}.cr")
+            prebuild = spec["prebuild"]?.try &.as_s?
+            specs << BinarySpec.new(name, main, prebuild, spec["flags"]?, spec["link_flags"]?)
+          end
+        end
       end
-      new(name, version, executables)
+      specs
+    end
+  end
+
+  # OS family for the binaries: selectors; "macos" is an alias of "darwin".
+  def self.os_family : String
+    {% if flag?(:windows) %}
+      "windows"
+    {% elsif flag?(:darwin) %}
+      "darwin"
+    {% else %}
+      "linux"
+    {% end %}
+  end
+
+  # A flags:/link_flags: value: a plain list applies to every OS; a mapping
+  # selects by OS family — exact match, then alias (macos for darwin),
+  # then "*"; first hit wins.
+  def self.select_flag_list(node : YAML::Any?, os : String = os_family) : Array(String)
+    return [] of String if node.nil?
+    case node.raw
+    when Array
+      node.as_a.map &.to_s
+    when Hash
+      selected = node[os]?
+      selected = node["macos"]? if selected.nil? && os == "darwin"
+      selected = node["*"]? if selected.nil?
+      selected.try(&.as_a?).try(&.map &.to_s) || [] of String
+    else
+      [] of String
     end
   end
 
@@ -299,35 +391,64 @@ module Carat
   end
 
   # ------------------------------------------------------------------
-  # Ядро: сборка executables
+  # Ядро: сборка binaries
   # ------------------------------------------------------------------
 
-  def self.build_executables(meta : ShardMeta, dir : String, bin_dir : String) : Array(String)
-    if meta.executables.empty?
-      raise Error.new("#{meta.name}: no executables: entry in shard.yml — nothing to build")
+  # mold (and some ld setups) do not open relative paths from --link-flags:
+  # a relative archive/dir reference is rewritten against the shard root —
+  # only when it actually exists there (real file/dir, not a random flag).
+  private def self.absolutize_link_flags(flags : Array(String), dir : String) : Array(String)
+    flags.map do |flag|
+      prefix = {"-L" => 2, "/LIBPATH:" => 9}.find { |p, _| flag.starts_with?(p) }
+      if prefix
+        p, n = prefix
+        rest = flag[n..]
+        File.directory?(File.join(dir, rest)) && !Path[rest].absolute? ? p + File.expand_path(rest, dir) : flag
+      elsif !Path[flag].absolute? && File.file?(File.join(dir, flag))
+        File.expand_path(flag, dir)
+      else
+        flag
+      end
+    end
+  end
+
+  def self.build_binaries(meta : ShardMeta, dir : String, bin_dir : String) : Array(String)
+    if meta.binaries.empty?
+      raise Error.new("#{meta.name}: no binaries: entry in shard.yml — nothing to build")
     end
     unless shell.which("crystal")
       raise Error.new("crystal compiler not found in PATH")
     end
     Dir.mkdir_p(bin_dir)
+    os = os_family
     built = [] of String
-    meta.executables.each do |exe|
-      entry = File.join(dir, "src", "#{exe}.cr")
+    meta.binaries.each do |bin|
+      entry = File.join(dir, bin.main)
       unless File.exists?(entry)
-        raise Error.new("#{meta.name}: entrypoint src/#{exe}.cr not found")
+        raise Error.new("#{meta.name}: main for binary #{bin.name} not found: #{bin.main}")
       end
-      target = File.join(bin_dir, exe)
+      if prebuild = bin.prebuild
+        puts "Prebuild (#{bin.name}): #{prebuild}"
+        unless shell.run_command(prebuild, dir)
+          raise Error.new("prebuild failed for #{bin.name}: #{prebuild}")
+        end
+      end
+      target = File.join(bin_dir, bin.name)
       overwritten = File.exists?(target)
       if overwritten
         puts "WARNING: OVERWRITING WITH NEW BINARY: #{target}"
       end
-      puts "Building #{exe} (#{meta.name} #{meta.version}, release)..."
+      puts "Building #{bin.name} (#{meta.name} #{meta.version}, release)..."
+      args = ["build", "--release", "--no-color"] + select_flag_list(bin.flags, os)
+      link_flags = absolutize_link_flags(select_flag_list(bin.link_flags, os), dir)
+      args += ["--link-flags", link_flags.join(' ')] unless link_flags.empty?
       # Сборка во временный файл + rename: прямой -o поверх запущенного
       # бинарника падает с ETXTBSY (актуально для `carat update carat`).
       staged = "#{target}.new"
-      unless shell.run("crystal", ["build", "--release", "--no-color", "-o", staged, File.join("src", "#{exe}.cr")], dir)
+      args += ["-o", staged, bin.main]
+      unless shell.run("crystal", args, dir)
         File.delete(staged) if File.exists?(staged)
-        raise Error.new("build failed: #{exe}")
+        raise Error.new("build failed: #{bin.name}")
       end
       unless Artifact.binary?(staged)
         File.delete(staged)
@@ -359,7 +480,7 @@ module Carat
       meta, staged = stage(source)
       previous = installed_version(meta.name)
       store = promote(meta, staged)
-      Carat.build_executables(meta, store, Paths.bin_dir)
+      Carat.build_binaries(meta, store, Paths.bin_dir)
       File.write(Paths.current_pointer(meta.name), meta.version)
       Carat.logger.log("install #{meta.name} #{meta.version} from #{source.location} (previous: #{previous || "none"})")
       puts "Installed #{meta.name} #{meta.version} -> #{Paths.bin_dir}"
@@ -387,7 +508,7 @@ module Carat
       end
       puts "Updating #{meta.name} #{installed} -> #{meta.version}"
       store = promote(meta, staged)
-      Carat.build_executables(meta, store, Paths.bin_dir)
+      Carat.build_binaries(meta, store, Paths.bin_dir)
       File.write(Paths.current_pointer(meta.name), meta.version)
       Carat.logger.log("update #{meta.name} #{installed} -> #{meta.version} from #{source.location}")
       puts "Updated #{meta.name} #{meta.version} -> #{Paths.bin_dir}"
@@ -453,8 +574,14 @@ module Carat
         raise Error.new("shards #{@shards_command} failed — try: carat update " \
                         "(runs `shards update`, then rebuilds ./.carat/bin)")
       end
+      if meta.binaries.empty?
+        # a library project (no binaries) is a legitimate carat install
+        puts "No binaries entry in shard.yml, skipping"
+        Carat.logger.log("project #{@shards_command} #{meta.name} #{meta.version} -> no binaries, nothing to build")
+        return
+      end
       bin_dir = Paths.project_bin
-      built = Carat.build_executables(meta, Dir.current, bin_dir)
+      built = Carat.build_binaries(meta, Dir.current, bin_dir)
       Carat.logger.log("project #{@shards_command} #{meta.name} #{meta.version} -> #{bin_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
       puts "Installed #{meta.name} #{meta.version} -> #{bin_dir}"
     end
@@ -492,10 +619,10 @@ module Carat
       carat install .       Global install of the shard in the current directory
                             (local shard development)
       carat install         In a project with shard.yml: shards install + build
-                            executables into ./.carat/bin
+                            binaries into ./.carat/bin
       carat update <src>    Update globally installed shard if remote version is newer
       carat update          In a project: delegates to shards update + rebuild
-                            executables into ./.carat/bin
+                            binaries into ./.carat/bin
       carat exec <cmd> ...  Run <cmd> with ./.carat/bin prepended to PATH
 
     Directories:

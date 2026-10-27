@@ -1,11 +1,30 @@
 # carat
 
-**A package manager for Crystal, built around the RubyGems workflow.**
+**All-in-one package manager for Crystal.**
 
-In Ruby, a package can be a tool: `gem install` gives you a working binary in
-one command, immediately useful. Crystal shards never had that — a CLI shard
-meant `git clone`, `crystal build`, and hand-editing your PATH.
+Extends `shard.yml` with a `binaries:` section — **fully compatible with
+standard Crystal installs**: `shards install` / `shards build` / shard.lock
+keep working untouched (shards simply ignores the extra key).
 
+- **Build and share your Crystal shards like Ruby gems** — a package can be
+  a tool you *use right now*, not just a library you require.
+- **System-wide install as a system binary** — `carat install owner/repo`
+  puts a ready-to-run release binary into `~/.carat/bin` (on your PATH).
+  One command, immediately useful. No manual installs, no PATH pain.
+- **Compile flags per target system** — Windows, Linux and Darwin often
+  need different (link) flags; `binaries:` in shard.yml declares them
+  per OS, so the same shard builds everywhere.
+- **Real-world builds** — custom `main:` files, native `prebuild:` steps
+  (rake/cmake/make), explicit archives and link flags: GUI and app shards
+  install as easily as hello-world CLIs.
+- **Project mode too** — `carat install` in a project delegates to
+  `shards install` and builds binaries into `./.carat/bin`;
+  `carat exec` runs them like `bundle exec`.
+- **Self-hosting** — carat installs and updates itself through carat.
+
+In Ruby, a package can be a tool: `gem install` gives you a working binary
+in one command, immediately useful. Crystal shards never had that — a CLI
+shard meant `git clone`, `crystal build`, and hand-editing your PATH.
 carat fixes it:
 
 ```
@@ -14,7 +33,7 @@ $ hello_binary
 hello_binary 1.1.0: Hello from a carat-installed shard!
 ```
 
-One command: the shard is fetched from GitHub, its `executables:` are built
+One command: the shard is fetched from GitHub, its `binaries:` are built
 with `crystal build --release`, and self-contained binaries land in
 `~/.carat/bin` — on your PATH, ready to use. No manual installs, no PATH
 pain, no "first clone five repos and read the README".
@@ -30,9 +49,9 @@ as simple as installing a gem:
 | `gem install rubocop` | `carat install crystal-tools/linter` |
 | `rubocop` just works  | `linter` just works                  |
 
-carat treats `executables:` in `shard.yml` as a first-class delivery format,
-not a build hint: the binary **is** the package. Libraries keep working the
-usual way — `carat install` inside a project delegates to `shards install`.
+carat treats `binaries:` in `shard.yml` as a first-class delivery format:
+the binary **is** the package. Libraries keep working the usual way —
+`carat install` inside a project delegates to `shards install`.
 
 ## Quick start
 
@@ -54,30 +73,50 @@ case.
 | ------------------------ | ------------------------------------------------------------------- |
 | `carat install <src>`    | Global install: clone → release build → binaries in `~/.carat/bin`  |
 | `carat install .`        | Global install of the shard in the current dir (local development)  |
-| `carat install`          | In a project: delegates to `shards install`, builds `executables:` into `./.carat/bin` |
+| `carat install`          | In a project: delegates to `shards install`, builds `binaries:` into `./.carat/bin` |
 | `carat update <src>`     | Compares the installed version with the remote; installs if newer  |
 | `carat update`          | In a project: delegates to `shards update`, rebuilds `./.carat/bin` |
 | `carat exec <cmd> [args]`| Like `bundle exec`: runs `<cmd>` with `./.carat/bin` prepended to PATH |
 
 ## Make your shard instantly installable
 
-If your shard already has an `executables:` entry and an entrypoint in
-`src/`, it is already carat-ready — publish and share the `owner/repo` slug:
+Add a `binaries:` section to shard.yml — carat's delivery contract. The
+simplest form is a list (entrypoints default to `src/<name>.cr`):
 
 ```yaml
-# shard.yml
-name: hello_binary
-version: 1.1.0
-executables:
+binaries:
   - hello_binary
 ```
 
-```
-src/hello_binary.cr   # entrypoint; built with crystal build --release
+The full form covers real-world builds — custom main files, native
+prebuild steps, compiler and linker flags that differ per OS:
+
+```yaml
+binaries:
+  widgets_gallery:
+    main: examples/widgets_gallery.cr    # any file, not just src/
+    prebuild: rake build:native          # run in the shard root first
+    flags:                               # crystal build flags
+      "*": [--something]
+      darwin: [-DUSE_METAL=0]
+    link_flags:                          # linker flags, per-OS selectors
+      "*": [-Llib]
+      linux: [lib/libfoo.a]              # explicit archive — ld order safe
+      windows: [/LIBPATH:lib]
 ```
 
-Bump the version in `shard.yml`, push — every user's `carat update` picks it
+Selector resolution follows crosspack's `hosts:` rules: exact OS family
+(`linux` / `darwin` / `windows`), then `*` — first hit wins. A plain list
+instead of a mapping applies to every OS. Relative paths in `link_flags`
+are resolved against the shard root (mold/ld do not open relative
+`--link-flags` paths).
+
+Bump the version in shard.yml, push — every user's `carat update` picks it
 up. No releases page, no tarballs, no install scripts.
+
+`shards` ignores the extra `binaries:` key, so the shard stays a perfectly
+normal shard — `shards install` / `shards build` keep working (verified
+with shards 0.20).
 
 ## What happens on install
 

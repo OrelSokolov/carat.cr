@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" width="180" alt="carat logo — a faceted diamond" />
+</p>
+
 # carat
 
 **All-in-one package manager for Crystal.**

@@ -113,7 +113,7 @@ prebuild steps, compiler and linker flags that differ per OS:
 binaries:
   widgets_gallery:
     main: examples/widgets_gallery.cr    # any file, not just src/
-    prebuild: rake build:native          # run in the shard root first
+    prebuild: rake build:native          # native build step, run in the shard root first
     flags:                               # crystal build flags
       "*": [--something]
       darwin: [-DUSE_METAL=0]
@@ -122,6 +122,12 @@ binaries:
       linux: [lib/libfoo.a]              # explicit archive — ld order safe
       windows: [/LIBPATH:lib]
 ```
+
+Dependencies declared in `dependencies:` are resolved automatically: a
+global install runs `shards install` in the stored copy before building,
+so shards with dependencies install as smoothly as dep-free ones.
+`prebuild:` stays for native build steps (rake/cmake/make), not for
+dependency resolution.
 
 Selector resolution follows crosspack's `hosts:` rules: exact OS family
 (`linux` / `darwin` / `windows`), then `*` — first hit wins. A plain list
@@ -188,10 +194,12 @@ keys, so the dependency stays a normal shard.
 2. **Store** — sources are archived at `~/.carat/shards/<name>/<version>/`
    with a `current` version pointer, so installed versions are inspectable
    and switchable later.
-3. **Build** — every `executables:` entry is compiled with
+3. **Resolve** — shards with `dependencies:` get a `shards install` run
+   in the stored copy (the compiler resolves bare requires from lib/).
+4. **Build** — every `binaries:` entry is compiled with
    `crystal build --release` from the stored copy and validated by magic
    bytes (ELF / Mach-O / PE) before it's allowed into the bin dir.
-4. **Link** — the binary is renamed into `~/.carat/bin/`. Overwriting an
+5. **Link** — the binary is renamed into `~/.carat/bin/`. Overwriting an
    existing binary always prints `WARNING: OVERWRITING WITH NEW BINARY` and
    is recorded in the audit log (`~/.carat/logs/carat.log`), so silent
    hijacking of your PATH is impossible.

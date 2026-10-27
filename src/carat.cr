@@ -11,7 +11,7 @@ require "file_utils"
 require "colorize"
 
 module Carat
-  VERSION = "0.4.0"
+  VERSION = "0.5.0"
 
   class Error < Exception
   end
@@ -293,9 +293,11 @@ module Carat
     getter version : String
     getter binaries : Array(BinarySpec)
     getter examples : Array(BinarySpec)
+    getter? has_dependencies : Bool
 
     def initialize(@name : String, @version : String,
-                   @binaries : Array(BinarySpec), @examples : Array(BinarySpec))
+                   @binaries : Array(BinarySpec), @examples : Array(BinarySpec),
+                   @has_dependencies : Bool = false)
     end
 
     def self.from_file(path : String) : self
@@ -310,7 +312,12 @@ module Carat
       name = doc["name"]?.try &.as_s?
       raise Error.new("shard.yml has no name") unless name
       version = doc["version"]?.try &.as_s? || "0.0.0"
-      new(name, version, parse_section(doc, "binaries"), parse_section(doc, "examples"))
+      # dependencies: presence decides whether a global install must run
+      # `shards install` before building (the compiler resolves bare
+      # requires from the project's lib/).
+      deps = doc["dependencies"]?.try &.as_h?
+      new(name, version, parse_section(doc, "binaries"), parse_section(doc, "examples"),
+          !deps.nil? && !deps.empty?)
     end
 
     # A `binaries:`/`examples:` section is a list of names (main defaults
@@ -487,6 +494,22 @@ module Carat
     end
   end
 
+  # A globally installed shard builds with `crystal build` directly, and
+  # the compiler resolves bare requires from the project's lib/ — so the
+  # dependency resolution the project mode delegates to `shards install`
+  # must run here too: once, in the stored copy, before the first binary
+  # is built. Dep-free shards skip it (nothing to resolve).
+  def self.install_dependencies(meta : ShardMeta, dir : String) : Nil
+    return unless meta.has_dependencies?
+    unless shell.which("shards")
+      raise Error.new("shards not found in PATH — needed to install dependencies of #{meta.name}")
+    end
+    puts "Installing dependencies of #{meta.name} (shards install)..."
+    unless shell.run("shards", ["install"], dir)
+      raise Error.new("shards install failed for #{meta.name}")
+    end
+  end
+
   def self.build_binaries(meta : ShardMeta, dir : String, bin_dir : String) : Array(String)
     if meta.binaries.empty?
       raise Error.new("#{meta.name}: no binaries: entry in shard.yml — nothing to build")
@@ -574,6 +597,7 @@ module Carat
       meta, staged = stage(source)
       previous = installed_version(meta.name)
       store = promote(meta, staged)
+      Carat.install_dependencies(meta, store)
       Carat.build_binaries(meta, store, bin_dir)
       build_examples(meta, store)
       File.write(Paths.current_pointer(meta.name), meta.version)
@@ -605,6 +629,7 @@ module Carat
       end
       puts "Updating #{meta.name} #{installed} -> #{meta.version}"
       store = promote(meta, staged)
+      Carat.install_dependencies(meta, store)
       Carat.build_binaries(meta, store, bin_dir)
       build_examples(meta, store)
       File.write(Paths.current_pointer(meta.name), meta.version)

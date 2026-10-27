@@ -16,7 +16,7 @@
 # The version follows shard.yml — bump both together.
 
 name: carat
-version: 0.1.0
+version: 0.2.0
 
 build:
   output: builds

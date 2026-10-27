@@ -10,7 +10,7 @@ require "yaml"
 require "file_utils"
 
 module Carat
-  VERSION = "0.1.0"
+  VERSION = "0.2.0"
 
   class Error < Exception
   end
@@ -261,7 +261,7 @@ module Carat
 
   def self.resolve_source(src : String) : Source
     if File.directory?(src)
-      Source.new(Source::Kind::Local, Path[src].expand(env.home).to_s)
+      Source.new(Source::Kind::Local, File.expand_path(src))
     elsif src.starts_with?("git@") || (src =~ /\A(?:https?|git|ssh|file):\/\//)
       name = src.chomp("/").split('/').last?.try &.gsub(/\.git\$/, "")
       Source.new(Source::Kind::Git, src, name)
@@ -482,6 +482,8 @@ module Carat
     Usage:
       carat install <src>   Global install: clone -> build -> binaries in ~/.carat/bin
                             <src>: owner/repo | name | git URL | local directory
+      carat install .       Global install of the shard in the current directory
+                            (local shard development)
       carat install         In a project with shard.yml: shards install + build
                             executables into ./.carat/bin
       carat update <src>    Update globally installed shard if remote version is newer

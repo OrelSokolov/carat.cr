@@ -41,6 +41,8 @@ carat install owner/repo        # from GitHub: owner/repo shorthand
 carat install name              # bare name → github.com/<name>/<name>
 carat install https://github.com/owner/repo.git
 carat install ~/code/my-tool    # local checkout
+carat install .                 # the shard in the current directory — global
+                                 # install while developing it locally
 ```
 
 Sources are resolved in that order; the built binaries are the same in every
@@ -51,6 +53,7 @@ case.
 | Command                  | Behavior                                                            |
 | ------------------------ | ------------------------------------------------------------------- |
 | `carat install <src>`    | Global install: clone → release build → binaries in `~/.carat/bin`  |
+| `carat install .`        | Global install of the shard in the current dir (local development)  |
 | `carat install`          | In a project: delegates to `shards install`, builds `executables:` into `./.carat/bin` |
 | `carat update <src>`     | Compares the installed version with the remote; installs if newer  |
 | `carat exec <cmd> [args]`| Like `bundle exec`: runs `<cmd>` with `./.carat/bin` prepended to PATH |

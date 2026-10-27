@@ -1,19 +1,17 @@
-# carat — bootstrap manifest for crosspack.
+# carat — build manifest for crosspack.
 #
-# The FIRST install of carat goes through crosspack:
+# No packages: carat is a plain console binary. The first install is a dumb
+# copy, done by the Rakefile:
 #
-#   gem install crosspack
-#   crosspack deps              # verify/install build deps (crystal, git, shards)
-#   crosspack build             # compile carat into builds/
-#   crosspack pack              # distro package (deb/rpm/PKGBUILD/MSI)
-#   crosspack install           # install this host's package
+#   rake install     # crystal build + cp bin/carat ~/.carat/bin/ + PATH
+#
+# crosspack's part is the toolchain: `crosspack deps` installs/verifies
+# crystal + git + shards on a fresh host. `crosspack install` (if ever used)
+# just delegates to the same `rake install`.
 #
 # Afterwards carat updates itself (and every other installed shard):
 #
-#   carat update OrelSokolov/carat
-#
-# The self-update lands in ~/.carat/bin/car at — keep ~/.carat/bin ahead of
-# /usr/local/bin in PATH so the fresh binary wins over the packaged one.
+#   carat update OrelSokolov/carat.cr
 #
 # The version follows shard.yml — bump both together.
 
@@ -121,8 +119,8 @@ package:
     Inside a project, `carat install` delegates to `shards install` and
     builds executables into ./.carat/bin; `carat exec` runs commands with
     that directory prepended to PATH.
-    First install via crosspack (`gem install crosspack`), updates via
-    `carat update carat` itself.
+    First install via `rake install` (plain binary copy), updates via
+    `carat update carat.cr` itself.
   sources: builds
   prefix: usr/local
   payload:
@@ -135,3 +133,8 @@ package:
     - carat
   links:
     bin/carat: ../lib/carat/carat
+
+# First install = dumb copy of the binary, no pack stage (see Rakefile).
+install:
+  hosts:
+    "*": rake install

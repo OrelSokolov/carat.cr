@@ -106,13 +106,20 @@ wrappers, no PATH pollution.
 
 ## Installing carat
 
-Bootstrap once via [crosspack](https://github.com/OrelSokolov/crosspack):
+No packages, no sudo — carat is a plain console binary:
 
 ```bash
-gem install crosspack
 git clone https://github.com/OrelSokolov/carat.cr.git && cd carat.cr
-crosspack deps && crosspack build && crosspack pack && crosspack install
+rake install
 ```
+
+`rake install` builds the release binary, copies it to `~/.carat/bin` (the
+first binary there is carat itself) and appends `~/.carat/bin` to your PATH
+— `~/.bashrc` / `~/.zshrc` on Unix, the user PATH on Windows. Idempotent:
+run it as many times as you like.
+
+On a fresh host without a toolchain, [crosspack](https://github.com/OrelSokolov/crosspack)
+sets it up first: `gem install crosspack && crosspack deps`.
 
 After that, carat updates itself like any other shard:
 
@@ -120,9 +127,7 @@ After that, carat updates itself like any other shard:
 carat update OrelSokolov/carat.cr
 ```
 
-The self-update lands in `~/.carat/bin/carat` — keep `~/.carat/bin` ahead of
-`/usr/local/bin` in PATH so the fresh binary wins. Rebuilding over the
-running binary is safe (build-to-temp + rename).
+Rebuilding over the running binary is safe (build-to-temp + rename).
 
 ## Status and roadmap
 

@@ -21,6 +21,9 @@ keep working untouched (shards simply ignores the extra key).
   `shards install` and builds binaries into `./.carat/bin`;
   `carat exec` runs them like `bundle exec`.
 - **Self-hosting** — carat installs and updates itself through carat.
+- **Shell autocompletion out of the box** — bash, fish and zsh: `carat exec
+  <TAB>` completes your project binaries (see
+  [Shell autocompletion](#shell-autocompletion)).
 
 In Ruby, a package can be a tool: `gem install` gives you a working binary
 in one command, immediately useful. Crystal shards never had that — a CLI
@@ -77,6 +80,7 @@ case.
 | `carat update <src>`     | Compares the installed version with the remote; installs if newer  |
 | `carat update`          | In a project: delegates to `shards update`, rebuilds `./.carat/bin` |
 | `carat exec <cmd> [args]`| Like `bundle exec`: runs `<cmd>` with `./.carat/bin` prepended to PATH |
+| `carat completion install` | Install shell autocompletion (bash / fish / zsh)                       |
 
 ## Make your shard instantly installable
 
@@ -146,6 +150,29 @@ with shards 0.20).
 
 Only self-contained binaries ever go into the bin dir — no assets, no
 wrappers, no PATH pollution.
+
+## Shell autocompletion
+
+```
+carat completion install
+```
+
+- **bash** — registers `complete -C carat carat` in the XDG bash-completion
+  dir (`~/.local/share/bash-completion/completions/`): no rc edits, live on
+  the first TAB in a new shell.
+- **fish** — writes `~/.config/fish/completions/carat.fish` (when fish is
+  installed).
+- **zsh** — prints a two-line `bashcompinit` snippet for `~/.zshrc`.
+
+What completes:
+
+- `carat <TAB>` — subcommands (`install`, `update`, `exec`, `completion`,
+  `--help`, `--version`)
+- `carat exec <TAB>` — the binaries of the current project (`./.carat/bin`):
+  `carat` itself is excluded, and only the first argument is completed —
+  the words after it belong to the launched program, and a fully typed
+  word is never re-offered (no duplicate inserts on repeated TABs)
+- `carat update <TAB>` — globally installed shards
 
 ## Installing carat
 

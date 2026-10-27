@@ -10,7 +10,7 @@ require "yaml"
 require "file_utils"
 
 module Carat
-  VERSION = "0.3.0"
+  VERSION = "0.3.1"
 
   class Error < Exception
   end
@@ -624,6 +624,8 @@ module Carat
       carat update          In a project: delegates to shards update + rebuild
                             binaries into ./.carat/bin
       carat exec <cmd> ...  Run <cmd> with ./.carat/bin prepended to PATH
+      carat completion install
+                            Shell autocompletion (bash/fish; zsh hint)
 
     Directories:
       ~/.carat/bin/                  global binaries (only entry points)
@@ -633,7 +635,21 @@ module Carat
       ./.carat/bin/                  project binaries
   TEXT
 
+  # Подкоманды для автокомплита; "__complete" скрытая — не показывается.
+  COMMANDS = ["install", "update", "exec", "completion"]
+
   def self.run(argv : Array(String)) : Nil
+    # bash `complete -C carat carat` protocol: bash runs us with COMP_LINE/
+    # COMP_POINT in the env and argv ["carat", <cur>, <prev>]. Intercepted
+    # before normal parsing — a half-typed word must not error. Hidden.
+    if ENV.has_key?("COMP_LINE") && argv.size == 3 && argv[0]? == "carat"
+      return complete_c
+    end
+    # The same candidates from words on the command line, for fish and
+    # manual use: carat __complete <words...> (last word = one being
+    # completed).
+    return complete(argv[1..]) if argv[0]? == "__complete"
+
     case command = argv[0]?
     when "install"
       if src = argv[1]?
@@ -652,6 +668,13 @@ module Carat
       raise Error.new("usage: carat exec <cmd> [args]") unless cmd
       args = argv.size > 2 ? argv[2..] : [] of String
       exec_command(cmd, args)
+    when "completion"
+      case argv[1]?
+      when "install"
+        completion_install
+      else
+        raise Error.new("usage: carat completion install")
+      end
     when "--version", "-v", "version"
       puts VERSION
     when "--help", "-h", "help", nil
@@ -661,6 +684,98 @@ module Carat
       STDERR.puts USAGE
       exit 1
     end
+  end
+
+  # ------------------------------------------------------------------
+  # Автокомплит (по образцу twinshot): bash дергает сам бинарник через
+  # `complete -C carat carat`, fish — через `carat __complete`.
+  # ------------------------------------------------------------------
+
+  private def self.complete_c : Nil
+    line = ENV["COMP_LINE"]? || ""
+    point = ENV["COMP_POINT"]?.try(&.to_i?) || line.size
+    before = line[0, Math.min(point, line.size)]
+    words = before.split.reject(&.empty?)
+    words = words[1..]? || [] of String # drop the "carat" word
+    words << "" if before.empty? || before.ends_with?(' ')
+    complete(words)
+  end
+
+  # Печатает кандидатов по набору слов командной строки: последнее слово
+  # дозаполняется, остальное — уже набранное. Фильтруем по префиксу и
+  # исключаем точное совпадение (иначе bash `complete -C` дописывает
+  # кандидата к уже полностью набранному слову при каждом TAB).
+  private def self.complete(words : Array(String)) : Nil
+    current = words.last? || ""
+    typed = words.size > 1 ? words[0...-1] : [] of String
+    begin
+      candidates_for(typed).each { |c| puts c if c.starts_with?(current) && c != current }
+    rescue IO::Error
+      # вывод ушел в закрытый пайп (| head) — это нормальный выход
+    end
+  end
+
+  private def self.candidates_for(typed : Array(String)) : Array(String)
+    case typed.first?
+    when nil          then COMMANDS + ["--help", "--version"]
+    when "exec"       then typed.size == 1 ? exec_candidates : [] of String
+    when "update"     then installed_shards
+    when "completion" then ["install"]
+    else                   [] of String
+    end
+  end
+
+  # carat exec <TAB>: только проектные бинарники из ./.carat/bin текущего
+  # каталога (сам carat исключён). exec — проектная команда, глобальные
+  # бинарники и весь PATH не предлагаются.
+  private def self.exec_candidates : Array(String)
+    candidates = [] of String
+    dir = Paths.project_bin
+    if Dir.exists?(dir)
+      Dir.children(dir).sort.each do |name|
+        next if name == "carat" # carat exec carat — не кандидат
+        candidates << name if executable_file?(File.join(dir, name))
+      end
+    end
+    candidates
+  end
+
+  # carat update <TAB>: глобально установленные шарды.
+  private def self.installed_shards : Array(String)
+    dir = Paths.shards_dir
+    return [] of String unless Dir.exists?(dir)
+    Dir.children(dir).sort.select { |name| File.exists?(Paths.current_pointer(name)) }
+  end
+
+  # `complete -C carat carat` into the XDG bash-completion dir — no rc
+  # edits, live on the first TAB in a new shell. fish gets a driver that
+  # calls `carat __complete`. zsh: bashcompinit hint (no standard dir).
+  private def self.completion_install : Nil
+    {% if flag?(:windows) %}
+      puts "Shell completion is not supported on Windows yet"
+      return
+    {% end %}
+
+    xdg = ENV["XDG_DATA_HOME"]?
+    data_home = xdg && xdg.starts_with?('/') ? xdg : File.join(env.home, ".local", "share")
+    bash_dir = File.join(data_home, "bash-completion", "completions")
+    Dir.mkdir_p(bash_dir)
+    bash_file = File.join(bash_dir, "carat")
+    File.write(bash_file, "complete -C carat carat\n")
+    puts "Wrote #{bash_file}"
+
+    if shell.which("fish")
+      fish_dir = File.join(env.home, ".config", "fish", "completions")
+      Dir.mkdir_p(fish_dir)
+      File.write(File.join(fish_dir, "carat.fish"),
+        %(complete -c carat -f -a '(carat __complete (commandline -opc)[2..-1] "")'\n))
+      puts "Wrote #{File.join(fish_dir, "carat.fish")}"
+    end
+
+    if shell.which("zsh") || File.exists?(File.join(env.home, ".zshrc"))
+      puts "zsh: add to ~/.zshrc:\n  autoload -U +X bashcompinit && bashcompinit\n  complete -C carat carat"
+    end
+    puts "Completion is live in a new shell (loaded on your first TAB)."
   end
 end
 

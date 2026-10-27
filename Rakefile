@@ -33,10 +33,24 @@ end
 
 desc "First install: build, copy the binary to ~/.carat/bin, add it to PATH"
 task install: :build do
+  install_binary(binary)
+end
+
+desc "Install an ALREADY BUILT binary (no rebuild): rake install:packed COPY=<path>"
+task 'install:packed' do
+  src = ENV['COPY'] || binary
+  unless File.file?(src)
+    abort "rake install:packed: binary not found: #{src}\n" \
+          'Run `crosspack build` first, or pass COPY=<path to the built binary>.'
+  end
+  install_binary(src)
+end
+
+def install_binary(src)
   bin_dir = carat_bin
   mkdir_p bin_dir
-  target = File.join(bin_dir, File.basename(binary))
-  cp binary, target
+  target = File.join(bin_dir, File.basename(src))
+  cp src, target
   chmod 0o755, target
   puts "Installed #{target}"
   add_to_path(bin_dir)

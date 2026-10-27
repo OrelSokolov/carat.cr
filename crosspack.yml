@@ -108,33 +108,10 @@ deps:
       macos: system            # git ships with the Xcode Command Line Tools
       windows: system          # Git for Windows, installed separately
 
-package:
-  maintainer: Oleg Sokolov
-  summary: carat — global binary installer for Crystal shards
-  description: |-
-    carat installs release binaries of Crystal shards system-wide:
-    `carat install owner/repo` clones the shard from GitHub, builds its
-    `executables:` with `crystal build --release` and puts
-    self-contained binaries into ~/.carat/bin.
-    Inside a project, `carat install` delegates to `shards install` and
-    builds executables into ./.carat/bin; `carat exec` runs commands with
-    that directory prepended to PATH.
-    First install via `rake install` (plain binary copy), updates via
-    `carat update carat.cr` itself.
-  sources: builds
-  prefix: usr/local
-  payload:
-    # Windows binaries carry .exe — the common key stays extension-less
-    # and resolves to the real file name per target.
-    carat:
-      windows: carat.exe
-      "*": carat
-  executables:
-    - carat
-  links:
-    bin/carat: ../lib/carat/carat
-
-# First install = dumb copy of the binary, no pack stage (see Rakefile).
+# First install = dumb copy of the already built binary (see Rakefile):
+# crosspack build compiles once, crosspack install only copies it —
+# no rebuild, no pack stage.
 install:
   hosts:
-    "*": rake install
+    windows: rake install:packed COPY={{build}}/carat.exe
+    "*": rake install:packed COPY={{build}}/carat

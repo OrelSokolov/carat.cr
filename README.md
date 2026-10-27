@@ -56,6 +56,7 @@ case.
 | `carat install .`        | Global install of the shard in the current dir (local development)  |
 | `carat install`          | In a project: delegates to `shards install`, builds `executables:` into `./.carat/bin` |
 | `carat update <src>`     | Compares the installed version with the remote; installs if newer  |
+| `carat update`          | In a project: delegates to `shards update`, rebuilds `./.carat/bin` |
 | `carat exec <cmd> [args]`| Like `bundle exec`: runs `<cmd>` with `./.carat/bin` prepended to PATH |
 
 ## Make your shard instantly installable

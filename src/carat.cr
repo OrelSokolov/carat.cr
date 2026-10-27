@@ -10,7 +10,7 @@ require "yaml"
 require "file_utils"
 
 module Carat
-  VERSION = "0.2.0"
+  VERSION = "0.2.1"
 
   class Error < Exception
   end
@@ -433,22 +433,29 @@ module Carat
   # ------------------------------------------------------------------
 
   class ProjectInstaller
-    def install : Nil
+    def initialize(@shards_command : String = "install")
+    end
+
+    def run : Nil
       shard_yml = File.join(Dir.current, "shard.yml")
       unless File.exists?(shard_yml)
-        raise Error.new("no shard.yml in #{Dir.current} (for a global install use: carat install <src>)")
+        hint = @shards_command == "update" ? "carat update <src>" : "carat install <src>"
+        raise Error.new("no shard.yml in #{Dir.current} (for a global install use: #{hint})")
       end
       unless Carat.shell.which("shards")
         raise Error.new("shards not found in PATH")
       end
       meta = ShardMeta.from_file(shard_yml)
-      puts "Running shards install..."
-      unless Carat.shell.run("shards", ["install"], Dir.current)
-        raise Error.new("shards install failed")
+      puts "Running shards #{@shards_command}..."
+      unless Carat.shell.run("shards", [@shards_command], Dir.current)
+        # shards' own hint says `shards update` — in a carat project the
+        # equivalent is `carat update` (shards update + rebuild .carat/bin).
+        raise Error.new("shards #{@shards_command} failed — try: carat update " \
+                        "(runs `shards update`, then rebuilds ./.carat/bin)")
       end
       bin_dir = Paths.project_bin
       built = Carat.build_executables(meta, Dir.current, bin_dir)
-      Carat.logger.log("project install #{meta.name} #{meta.version} -> #{bin_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
+      Carat.logger.log("project #{@shards_command} #{meta.name} #{meta.version} -> #{bin_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
       puts "Installed #{meta.name} #{meta.version} -> #{bin_dir}"
     end
   end
@@ -487,6 +494,8 @@ module Carat
       carat install         In a project with shard.yml: shards install + build
                             executables into ./.carat/bin
       carat update <src>    Update globally installed shard if remote version is newer
+      carat update          In a project: delegates to shards update + rebuild
+                            executables into ./.carat/bin
       carat exec <cmd> ...  Run <cmd> with ./.carat/bin prepended to PATH
 
     Directories:
@@ -503,12 +512,14 @@ module Carat
       if src = argv[1]?
         GlobalInstaller.new(src).install
       else
-        ProjectInstaller.new.install
+        ProjectInstaller.new("install").run
       end
     when "update"
-      src = argv[1]?
-      raise Error.new("usage: carat update <src>") unless src
-      GlobalInstaller.new(src).update
+      if src = argv[1]?
+        GlobalInstaller.new(src).update
+      else
+        ProjectInstaller.new("update").run
+      end
     when "exec"
       cmd = argv[1]?
       raise Error.new("usage: carat exec <cmd> [args]") unless cmd

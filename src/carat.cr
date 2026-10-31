@@ -11,7 +11,7 @@ require "file_utils"
 require "colorize"
 
 module Carat
-  VERSION = "0.5.0"
+  VERSION = "0.6.0"
 
   class Error < Exception
   end
@@ -510,21 +510,25 @@ module Carat
     end
   end
 
-  def self.build_binaries(meta : ShardMeta, dir : String, bin_dir : String) : Array(String)
+  # release=true → `--release` (= -O3 --single-module); release=false —
+  # dev-режим: только -O3 (без --single-module — быстрее сборка).
+  def self.build_binaries(meta : ShardMeta, dir : String, bin_dir : String,
+                          release : Bool = true) : Array(String)
     if meta.binaries.empty?
       raise Error.new("#{meta.name}: no binaries: entry in shard.yml — nothing to build")
     end
-    build_specs(meta, meta.binaries, dir, bin_dir)
+    build_specs(meta, meta.binaries, dir, bin_dir, release)
   end
 
   # The optional examples: section — same build pipeline as binaries:, but
   # only built with --with-examples (never on a plain `carat install`).
-  def self.build_examples(meta : ShardMeta, dir : String, examples_dir : String) : Array(String)
-    build_specs(meta, meta.examples, dir, examples_dir)
+  def self.build_examples(meta : ShardMeta, dir : String, examples_dir : String,
+                          release : Bool = true) : Array(String)
+    build_specs(meta, meta.examples, dir, examples_dir, release)
   end
 
   private def self.build_specs(meta : ShardMeta, specs : Array(ShardMeta::BinarySpec),
-                               dir : String, out_dir : String) : Array(String)
+                               dir : String, out_dir : String, release : Bool) : Array(String)
     unless shell.which("crystal")
       raise Error.new("crystal compiler not found in PATH")
     end
@@ -551,12 +555,14 @@ module Carat
       if overwritten
         warning("WARNING: OVERWRITING WITH NEW BINARY: #{target}")
       end
-      puts "Building #{bin.name} (#{meta.name} #{meta.version}, release)..."
+      puts "Building #{bin.name} (#{meta.name} #{meta.version}, #{release ? "release" : "dev -O3"})..."
       # Свои флаги бинарника + флаги зависимостей, uniq с сохранением порядка
       # (свои первыми — селекторы зависимостей их не перекрывают).
       flags = (select_flag_list(bin.flags, os) + dep_flags).uniq
       link_flags = absolutize_link_flags((select_flag_list(bin.link_flags, os) + dep_link_flags).uniq, dir)
-      args = ["build", "--release", "--no-color"] + flags
+      args = ["build", "--no-color"]
+      args << (release ? "--release" : "-O3")
+      args += flags
       args += ["--link-flags", link_flags.join(' ')] unless link_flags.empty?
       # Сборка во временный файл + rename: прямой -o поверх запущенного
       # бинарника падает с ETXTBSY (актуально для `carat update carat`).
@@ -587,7 +593,11 @@ module Carat
   # ------------------------------------------------------------------
 
   class GlobalInstaller
-    def initialize(@src : String, @with_examples : Bool = false, @system : Bool = false)
+    # release=false — dev-сборка (-O3, без --single-module);
+    # only_shards=true — только клонирование и `shards install`, без сборки
+    # бинарников (`carat only install`).
+    def initialize(@src : String, @with_examples : Bool = false, @system : Bool = false,
+                   @release : Bool = true, @only_shards : Bool = false)
     end
 
     def install : Nil
@@ -598,12 +608,15 @@ module Carat
       previous = installed_version(meta.name)
       store = promote(meta, staged)
       Carat.install_dependencies(meta, store)
-      Carat.build_binaries(meta, store, bin_dir)
-      build_examples(meta, store)
+      build_all(meta, store, bin_dir)
       File.write(Paths.current_pointer(meta.name), meta.version)
       Carat.logger.log("install #{meta.name} #{meta.version} from #{source.location} to #{bin_dir} (previous: #{previous || "none"})")
       after_system_install(bin_dir)
-      puts "Installed #{meta.name} #{meta.version} -> #{bin_dir}"
+      if @only_shards
+        puts "Installed shards of #{meta.name} #{meta.version} -> #{store}"
+      else
+        puts "Installed #{meta.name} #{meta.version} -> #{bin_dir}"
+      end
     end
 
     def update : Nil
@@ -630,12 +643,23 @@ module Carat
       puts "Updating #{meta.name} #{installed} -> #{meta.version}"
       store = promote(meta, staged)
       Carat.install_dependencies(meta, store)
-      Carat.build_binaries(meta, store, bin_dir)
-      build_examples(meta, store)
+      build_all(meta, store, bin_dir)
       File.write(Paths.current_pointer(meta.name), meta.version)
       Carat.logger.log("update #{meta.name} #{installed} -> #{meta.version} from #{source.location}")
       after_system_install(bin_dir)
-      puts "Updated #{meta.name} #{meta.version} -> #{bin_dir}"
+      if @only_shards
+        puts "Updated shards of #{meta.name} #{meta.version} -> #{store}"
+      else
+        puts "Updated #{meta.name} #{meta.version} -> #{bin_dir}"
+      end
+    end
+
+    # Сборка бинарников (и примеров); в режиме only — пропускается, ставятся
+    # только зависимости.
+    private def build_all(meta : ShardMeta, store : String, bin_dir : String) : Nil
+      return if @only_shards
+      Carat.build_binaries(meta, store, bin_dir, @release)
+      build_examples(meta, store)
     end
 
     # Каталог назначения: --system кладёт бинарники системно; стор версий и
@@ -722,7 +746,10 @@ module Carat
   # ------------------------------------------------------------------
 
   class ProjectInstaller
-    def initialize(@shards_command : String = "install", @with_examples : Bool = false)
+    # release=false — dev-сборка (-O3); only_shards=true — только
+    # `shards install`/`shards update`, без сборки бинарников.
+    def initialize(@shards_command : String = "install", @with_examples : Bool = false,
+                   @release : Bool = true, @only_shards : Bool = false)
     end
 
     def run : Nil
@@ -742,6 +769,11 @@ module Carat
         raise Error.new("shards #{@shards_command} failed — try: carat update " \
                         "(runs `shards update`, then rebuilds ./.carat/bin)")
       end
+      if @only_shards
+        puts "Shards #{@shards_command} done"
+        Carat.logger.log("project #{@shards_command} #{meta.name} #{meta.version} -> only shards, no build")
+        return
+      end
       if meta.binaries.empty?
         # a library project (no binaries) is a legitimate carat install
         puts "No binaries entry in shard.yml, skipping"
@@ -749,7 +781,7 @@ module Carat
         return
       end
       bin_dir = Paths.project_bin
-      built = Carat.build_binaries(meta, Dir.current, bin_dir)
+      built = Carat.build_binaries(meta, Dir.current, bin_dir, @release)
       Carat.logger.log("project #{@shards_command} #{meta.name} #{meta.version} -> #{bin_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
       puts "Installed #{meta.name} #{meta.version} -> #{bin_dir}"
       return unless @with_examples
@@ -758,7 +790,7 @@ module Carat
         return
       end
       examples_dir = Paths.project_examples
-      built = Carat.build_examples(meta, Dir.current, examples_dir)
+      built = Carat.build_examples(meta, Dir.current, examples_dir, @release)
       Carat.logger.log("project examples #{@shards_command} #{meta.name} #{meta.version} -> #{examples_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
       puts "Examples -> #{examples_dir}"
     end
@@ -800,6 +832,12 @@ module Carat
       carat update <src>    Update globally installed shard if remote version is newer
       carat update          In a project: delegates to shards update + rebuild
                             binaries into ./.carat/bin
+      carat dev install     Like install, but builds with -O3 instead of --release
+                            (same optimization, no --single-module: faster builds)
+      carat dev update      Same for update
+      carat only install    Like install, but only installs shards (shards install),
+                            no binary build
+      carat only update     Same for update (shards update only)
       carat exec <cmd> ...  Run <cmd> with ./.carat/bin prepended to PATH
       carat completion install
                             Shell autocompletion (bash/fish; zsh hint)
@@ -824,7 +862,7 @@ module Carat
   TEXT
 
   # Подкоманды для автокомплита; "__complete" скрытая — не показывается.
-  COMMANDS = ["install", "update", "exec", "completion"]
+  COMMANDS = ["install", "update", "dev", "only", "exec", "completion"]
 
   def self.run(argv : Array(String)) : Nil
     # bash `complete -C carat carat` protocol: bash runs us with COMP_LINE/
@@ -838,26 +876,36 @@ module Carat
     # completed).
     return complete(argv[1..]) if argv[0]? == "__complete"
 
+    # Префикс режима перед install/update: `dev` — сборка -O3 вместо
+    # --release, `only` — только shards install/update, без сборки бинарников.
+    release = true
+    only_shards = false
+    if {"dev", "only"}.includes?(argv[0]?) && {"install", "update"}.includes?(argv[1]?)
+      release = false if argv[0] == "dev"
+      only_shards = true if argv[0] == "only"
+      argv = argv[1..]
+    end
+
     case command = argv[0]?
     when "install"
       rest = argv[1..]
       with_examples = !rest.delete("--with-examples").nil?
       system = !rest.delete("--system").nil?
       if src = rest[0]?
-        GlobalInstaller.new(src, with_examples, system).install
+        GlobalInstaller.new(src, with_examples, system, release, only_shards).install
       else
         raise Error.new("--system is only valid for global installs (carat install <src>)") if system
-        ProjectInstaller.new("install", with_examples).run
+        ProjectInstaller.new("install", with_examples, release, only_shards).run
       end
     when "update"
       rest = argv[1..]
       with_examples = !rest.delete("--with-examples").nil?
       system = !rest.delete("--system").nil?
       if src = rest[0]?
-        GlobalInstaller.new(src, with_examples, system).update
+        GlobalInstaller.new(src, with_examples, system, release, only_shards).update
       else
         raise Error.new("--system is only valid for global installs (carat update <src>)") if system
-        ProjectInstaller.new("update", with_examples).run
+        ProjectInstaller.new("update", with_examples, release, only_shards).run
       end
     when "exec"
       cmd = argv[1]?
@@ -917,6 +965,13 @@ module Carat
     when "exec"       then typed.size == 1 ? exec_candidates : [] of String
     when "install"    then typed.size == 1 ? ["--with-examples", "--system"] : [] of String
     when "update"     then installed_shards + ["--with-examples", "--system"]
+    when "dev", "only"
+      case typed[1]?
+      when nil          then ["install", "update"]
+      when "install"    then ["--with-examples", "--system"]
+      when "update"     then installed_shards + ["--with-examples", "--system"]
+      else                   [] of String
+      end
     when "completion" then ["install"]
     else                   [] of String
     end

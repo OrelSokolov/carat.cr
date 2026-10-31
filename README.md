@@ -83,6 +83,10 @@ case.
 | `carat install`          | In a project: delegates to `shards install`, builds `binaries:` into `./.carat/bin` |
 | `carat update <src>`     | Compares the installed version with the remote; installs if newer  |
 | `carat update`          | In a project: delegates to `shards update`, rebuilds `./.carat/bin` |
+| `carat dev install`     | Like `install`, but builds with `-O3` instead of `--release` (same optimization, no `--single-module` — faster builds, keeps debug info) |
+| `carat dev update`      | Same for `update`                                                   |
+| `carat only install`    | Like `install`, but only runs `shards install` — no binary build (drop-in `shards install` compatibility) |
+| `carat only update`     | Same for `update` (`shards update` only)                            |
 | `carat exec <cmd> [args]`| Like `bundle exec`: runs `<cmd>` with `./.carat/bin` prepended to PATH |
 | `carat completion install` | Install shell autocompletion (bash / fish / zsh)                       |
 

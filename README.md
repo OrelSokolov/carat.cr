@@ -83,7 +83,7 @@ case.
 | `carat install`          | In a project: delegates to `shards install`, builds `binaries:` into `./.carat/bin` |
 | `carat update <src>`     | Compares the installed version with the remote; installs if newer  |
 | `carat update`          | In a project: delegates to `shards update`, rebuilds `./.carat/bin` |
-| `carat dev install`     | Like `install`, but builds with `-O3` instead of `--release` (same optimization, no `--single-module` — faster builds, keeps debug info) |
+| `carat dev install`     | Like `install`, but builds with a plain `crystal build` (no `--release`): faster codegen for development iteration |
 | `carat dev update`      | Same for `update`                                                   |
 | `carat only install`    | Like `install`, but only runs `shards install` — no binary build (drop-in `shards install` compatibility) |
 | `carat only update`     | Same for `update` (`shards update` only)                            |
@@ -127,6 +127,32 @@ binaries:
       linux: [lib/libfoo.a]              # explicit archive — ld order safe
       windows: [/LIBPATH:lib]
 ```
+
+### Shared keys: `all:` and `each:`
+
+In the mapping form two reserved keys control the whole section — no need
+to repeat the same spec on every binary:
+
+```yaml
+binaries:
+  all:                      # ONCE per section, before any binary is built
+    prebuild: rake build:native
+  each:                     # defaults for EVERY binary (own keys override)
+    flags: [-DSOME=1]
+  hello: {}                 # gets each:'s flags, all:'s prebuild already ran
+  widgets_gallery:
+    main: examples/widgets_gallery.cr
+  tool:
+    flags: [-DOTHER=1]      # own flags win over each:'s
+```
+
+- `all:` — the section-wide step: its `prebuild` runs **one time** before
+  the section's builds (the shared native step — not once per binary), its
+  `flags`/`link_flags` are the base for every binary.
+- `each:` — per-binary defaults: `prebuild` runs before **each** binary,
+  `flags`/`link_flags` apply to each unless the binary overrides them.
+- Precedence: the binary's own keys > `each:` > `all:`. Neither key is a
+  binary itself.
 
 Dependencies declared in `dependencies:` are resolved automatically: a
 global install runs `shards install` in the stored copy before building,
@@ -207,7 +233,9 @@ keys, so the dependency stays a normal shard.
 5. **Link** — the binary is renamed into `~/.carat/bin/`. Overwriting an
    existing binary always prints `WARNING: OVERWRITING WITH NEW BINARY` and
    is recorded in the audit log (`~/.carat/logs/carat.log`), so silent
-   hijacking of your PATH is impossible.
+   hijacking of your PATH is impossible. (Global installs only — project
+   rebuilds into `./.carat/bin` stay quiet: overwriting your own build is
+   the normal dev loop.)
 
 ## Layout
 

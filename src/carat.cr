@@ -11,7 +11,7 @@ require "file_utils"
 require "colorize"
 
 module Carat
-  VERSION = "0.7.0"
+  VERSION = "0.8.0"
 
   class Error < Exception
   end
@@ -289,14 +289,43 @@ module Carat
       end
     end
 
+    # A `binaries:`/`examples:` section. Inside the mapping form two
+    # reserved keys control the whole section:
+    #
+    #   binaries:
+    #     all:                      # once per section, before any binary
+    #       prebuild: rake build:native
+    #     each:                     # defaults for every binary (own keys win)
+    #       flags: [-DSOME=1]
+    #     hello: {}
+    #     tool: {main: src/tool.cr}
+    #
+    # `all:` runs its prebuild ONE time before the section's builds (the
+    # shared native step); its flags/link_flags are the base for every
+    # binary. `each:` is per-binary defaults: prebuild runs before EACH
+    # binary, flags/link_flags apply to each unless the binary overrides.
+    # Precedence: own > each > all. Neither key is a binary itself.
+    class Section
+      getter specs : Array(BinarySpec)
+      getter all : BinarySpec?
+      getter each : BinarySpec?
+
+      def initialize(@specs : Array(BinarySpec), @all : BinarySpec?, @each : BinarySpec?)
+      end
+
+      def empty? : Bool
+        @specs.empty?
+      end
+    end
+
     getter name : String
     getter version : String
-    getter binaries : Array(BinarySpec)
-    getter examples : Array(BinarySpec)
+    getter binaries : Section
+    getter examples : Section
     getter? has_dependencies : Bool
 
     def initialize(@name : String, @version : String,
-                   @binaries : Array(BinarySpec), @examples : Array(BinarySpec),
+                   @binaries : Section, @examples : Section,
                    @has_dependencies : Bool = false)
     end
 
@@ -322,11 +351,12 @@ module Carat
 
     # A `binaries:`/`examples:` section is a list of names (main defaults
     # to src/<name>.cr) or a mapping name -> spec
-    # (main/prebuild/flags/link_flags).
-    private def self.parse_section(doc : YAML::Any, key : String) : Array(BinarySpec)
+    # (main/prebuild/flags/link_flags) — see Section for the reserved
+    # `all:`/`each:` keys of the mapping form.
+    private def self.parse_section(doc : YAML::Any, key : String) : Section
       node = doc[key]?
       specs = [] of BinarySpec
-      return specs if node.nil?
+      return Section.new(specs, nil, nil) if node.nil?
       case node.raw
       when Array
         node.as_a.each do |item|
@@ -334,19 +364,39 @@ module Carat
           specs << BinarySpec.new(name, File.join("src", "#{name}.cr"), nil, nil, nil)
         end
       when Hash
-        node.as_h.each do |key, spec|
-          name = key.as_s
+        all_spec = shared_spec(node, "all")
+        each_spec = shared_spec(node, "each")
+        node.as_h.each do |name, spec|
+          next if {"all", "each"}.includes?(name.as_s)
+          e_pb, e_flags, e_link = each_spec.try(&.prebuild), each_spec.try(&.flags), each_spec.try(&.link_flags)
+          a_flags, a_link = all_spec.try(&.flags), all_spec.try(&.link_flags)
           case spec.raw
           when String
-            specs << BinarySpec.new(name, spec.as_s, nil, nil, nil)
+            specs << BinarySpec.new(name.as_s, spec.as_s, e_pb, e_flags || a_flags, e_link || a_link)
+          when Nil
+            specs << BinarySpec.new(name.as_s, File.join("src", "#{name.as_s}.cr"),
+              e_pb, e_flags || a_flags, e_link || a_link)
           when Hash
             main = spec["main"]?.try(&.as_s?) || File.join("src", "#{name}.cr")
-            prebuild = spec["prebuild"]?.try &.as_s?
-            specs << BinarySpec.new(name, main, prebuild, spec["flags"]?, spec["link_flags"]?)
+            prebuild = spec["prebuild"]?.try(&.as_s?) || e_pb
+            specs << BinarySpec.new(name.as_s, main, prebuild,
+              spec["flags"]? || e_flags || a_flags, spec["link_flags"]? || e_link || a_link)
           end
         end
       end
-      specs
+      Section.new(specs, all_spec, each_spec)
+    end
+
+    # The reserved `all:`/`each:` key: prebuild/flags/link_flags without
+    # main (nil if absent or not a mapping).
+    private def self.shared_spec(node : YAML::Any, key : String) : BinarySpec?
+      raw = node.as_h[key]?
+      return nil unless raw
+      spec = raw.as_h?
+      return nil unless spec
+      BinarySpec.new(key, "",
+        spec["prebuild"]?.try &.as_s?,
+        spec["flags"]?, spec["link_flags"]?)
     end
   end
 
@@ -511,24 +561,30 @@ module Carat
   end
 
   # release=true → `--release` (= -O3 --single-module); release=false —
-  # dev-режим: только -O3 (без --single-module — быстрее сборка).
+  # dev-режим: обычный `crystal build` без оптимизаций (быстрый кодоген).
+  # warn_overwrite=false для проектной установки: перезапись ./.carat/bin —
+  # нормальный цикл пересборки, WARNING только для глобальных каталогов,
+  # где он защищает PATH от тихой подмены.
+  # Общий prebuild секции — `all: prebuild:` в binaries:/examples:
+  # (см. ShardMeta::Section): один раз, а не по разу на каждый бинарник.
   def self.build_binaries(meta : ShardMeta, dir : String, bin_dir : String,
-                          release : Bool = true) : Array(String)
+                          release : Bool = true, warn_overwrite : Bool = true) : Array(String)
     if meta.binaries.empty?
       raise Error.new("#{meta.name}: no binaries: entry in shard.yml — nothing to build")
     end
-    build_specs(meta, meta.binaries, dir, bin_dir, release)
+    build_specs(meta, meta.binaries, dir, bin_dir, release, warn_overwrite)
   end
 
   # The optional examples: section — same build pipeline as binaries:, but
   # only built with --with-examples (never on a plain `carat install`).
   def self.build_examples(meta : ShardMeta, dir : String, examples_dir : String,
-                          release : Bool = true) : Array(String)
-    build_specs(meta, meta.examples, dir, examples_dir, release)
+                          release : Bool = true, warn_overwrite : Bool = true) : Array(String)
+    build_specs(meta, meta.examples, dir, examples_dir, release, warn_overwrite)
   end
 
-  private def self.build_specs(meta : ShardMeta, specs : Array(ShardMeta::BinarySpec),
-                               dir : String, out_dir : String, release : Bool) : Array(String)
+  private def self.build_specs(meta : ShardMeta, section : ShardMeta::Section,
+                               dir : String, out_dir : String, release : Bool,
+                               warn_overwrite : Bool) : Array(String)
     unless shell.which("crystal")
       raise Error.new("crystal compiler not found in PATH")
     end
@@ -538,7 +594,15 @@ module Carat
     unless dep_flags.empty? && dep_link_flags.empty?
       puts "Dep flags (lib/, uniq): flags=#{dep_flags.uniq.inspect} link_flags=#{dep_link_flags.uniq.inspect}"
     end
+    # `all: prebuild:` — общий шаг секции, один раз до сборки бинарников.
+    if all_prebuild = section.all.try &.prebuild
+      puts "Prebuild (all): #{all_prebuild}"
+      unless shell.run_command(all_prebuild, dir)
+        raise Error.new("prebuild failed: #{all_prebuild}")
+      end
+    end
     built = [] of String
+    specs = section.specs
     specs.each do |bin|
       entry = File.join(dir, bin.main)
       unless File.exists?(entry)
@@ -552,16 +616,16 @@ module Carat
       end
       target = File.join(out_dir, bin.name)
       overwritten = File.exists?(target)
-      if overwritten
+      if overwritten && warn_overwrite
         warning("WARNING: OVERWRITING WITH NEW BINARY: #{target}")
       end
-      puts "Building #{bin.name} (#{meta.name} #{meta.version}, #{release ? "release" : "dev -O3"})..."
+      puts "Building #{bin.name} (#{meta.name} #{meta.version}, #{release ? "release" : "dev"})..."
       # Свои флаги бинарника + флаги зависимостей, uniq с сохранением порядка
       # (свои первыми — селекторы зависимостей их не перекрывают).
       flags = (select_flag_list(bin.flags, os) + dep_flags).uniq
       link_flags = absolutize_link_flags((select_flag_list(bin.link_flags, os) + dep_link_flags).uniq, dir)
       args = ["build", "--no-color"]
-      args << (release ? "--release" : "-O3")
+      args << "--release" if release
       args += flags
       args += ["--link-flags", link_flags.join(' ')] unless link_flags.empty?
       # Сборка во временный файл + rename: прямой -o поверх запущенного
@@ -593,7 +657,7 @@ module Carat
   # ------------------------------------------------------------------
 
   class GlobalInstaller
-    # release=false — dev-сборка (-O3, без --single-module);
+    # release=false — dev-сборка (без --release);
     # only_shards=true — только клонирование и `shards install`, без сборки
     # бинарников (`carat only install`).
     def initialize(@src : String, @with_examples : Bool = false, @system : Bool = false,
@@ -746,7 +810,7 @@ module Carat
   # ------------------------------------------------------------------
 
   class ProjectInstaller
-    # release=false — dev-сборка (-O3); only_shards=true — только
+    # release=false — dev-сборка (без --release); only_shards=true — только
     # `shards install`/`shards update`, без сборки бинарников.
     def initialize(@shards_command : String = "install", @with_examples : Bool = false,
                    @release : Bool = true, @only_shards : Bool = false)
@@ -781,7 +845,7 @@ module Carat
         return
       end
       bin_dir = Paths.project_bin
-      built = Carat.build_binaries(meta, Dir.current, bin_dir, @release)
+      built = Carat.build_binaries(meta, Dir.current, bin_dir, @release, warn_overwrite: false)
       Carat.logger.log("project #{@shards_command} #{meta.name} #{meta.version} -> #{bin_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
       puts "Installed #{meta.name} #{meta.version} -> #{bin_dir}"
       return unless @with_examples
@@ -790,7 +854,7 @@ module Carat
         return
       end
       examples_dir = Paths.project_examples
-      built = Carat.build_examples(meta, Dir.current, examples_dir, @release)
+      built = Carat.build_examples(meta, Dir.current, examples_dir, @release, warn_overwrite: false)
       Carat.logger.log("project examples #{@shards_command} #{meta.name} #{meta.version} -> #{examples_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
       puts "Examples -> #{examples_dir}"
     end
@@ -832,8 +896,8 @@ module Carat
       carat update <src>    Update globally installed shard if remote version is newer
       carat update          In a project: delegates to shards update + rebuild
                             binaries into ./.carat/bin
-      carat dev install     Like install, but builds with -O3 instead of --release
-                            (same optimization, no --single-module: faster builds)
+      carat dev install     Like install, but builds without --release
+                            (plain crystal build: faster codegen, for iteration)
       carat dev update      Same for update
       carat only install    Like install, but only installs shards (shards install),
                             no binary build
@@ -895,7 +959,7 @@ module Carat
     # completed).
     return complete(argv[1..]) if argv[0]? == "__complete"
 
-    # Префикс режима перед install/update: `dev` — сборка -O3 вместо
+    # Префикс режима перед install/update: `dev` — сборка без
     # --release, `only` — только shards install/update, без сборки бинарников.
     release = true
     only_shards = false

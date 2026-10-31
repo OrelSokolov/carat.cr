@@ -87,6 +87,8 @@ case.
 | `carat dev update`      | Same for `update`                                                   |
 | `carat only install`    | Like `install`, but only runs `shards install` — no binary build (drop-in `shards install` compatibility) |
 | `carat only update`     | Same for `update` (`shards update` only)                            |
+| `carat shards install`  | Synonym of `carat only install`                                     |
+| `carat shards update`   | Synonym of `carat only update`                                      |
 | `carat exec <cmd> [args]`| Like `bundle exec`: runs `<cmd>` with `./.carat/bin` prepended to PATH |
 | `carat self install`     | Install-or-update carat itself from the canonical repo (`OrelSokolov/carat.cr`); `carat self update` is the same thing |
 | `carat completion install` | Install shell autocompletion (bash / fish / zsh)                       |

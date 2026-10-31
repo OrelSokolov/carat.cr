@@ -12,7 +12,7 @@ require "colorize"
 require "sysinfo"
 
 module Carat
-  VERSION = "0.9.0"
+  VERSION = "0.10.0"
 
   class Error < Exception
   end
@@ -1120,6 +1120,7 @@ module Carat
       carat only install    Like install, but only installs shards (shards install),
                             no binary build
       carat only update     Same for update (shards update only)
+                            (`shards` is a synonym of `only`: carat shards install)
       carat exec <cmd> ...  Run <cmd> with ./.carat/bin prepended to PATH
       carat completion install
                             Shell autocompletion (bash/fish; zsh hint)
@@ -1147,7 +1148,7 @@ module Carat
   TEXT
 
   # Подкоманды для автокомплита; "__complete" скрытая — не показывается.
-  COMMANDS = ["install", "update", "dev", "only", "exec", "completion", "self"]
+  COMMANDS = ["install", "update", "dev", "only", "shards", "exec", "completion", "self"]
 
   # Канонический репозиторий carat — источник для `carat self ...`.
   CARAT_SOURCE = "OrelSokolov/carat.cr"
@@ -1178,12 +1179,13 @@ module Carat
     return complete(argv[1..]) if argv[0]? == "__complete"
 
     # Префикс режима перед install/update: `dev` — сборка без
-    # --release, `only` — только shards install/update, без сборки бинарников.
+    # --release, `only`/`shards` — только shards install/update, без сборки
+    # бинарников (`shards` — синоним `only` для drop-in `shards install`).
     release = true
     only_shards = false
-    if {"dev", "only"}.includes?(argv[0]?) && {"install", "update"}.includes?(argv[1]?)
+    if {"dev", "only", "shards"}.includes?(argv[0]?) && {"install", "update"}.includes?(argv[1]?)
       release = false if argv[0] == "dev"
-      only_shards = true if argv[0] == "only"
+      only_shards = true if {"only", "shards"}.includes?(argv[0])
       argv = argv[1..]
     end
 
@@ -1274,7 +1276,7 @@ module Carat
     when "exec"       then typed.size == 1 ? exec_candidates : [] of String
     when "install"    then typed.size == 1 ? ["--with-examples", "--system"] : [] of String
     when "update"     then installed_shards + ["--with-examples", "--system"]
-    when "dev", "only"
+    when "dev", "only", "shards"
       case typed[1]?
       when nil          then ["install", "update"]
       when "install"    then ["--with-examples", "--system"]

@@ -88,6 +88,7 @@ case.
 | `carat only install`    | Like `install`, but only runs `shards install` — no binary build (drop-in `shards install` compatibility) |
 | `carat only update`     | Same for `update` (`shards update` only)                            |
 | `carat exec <cmd> [args]`| Like `bundle exec`: runs `<cmd>` with `./.carat/bin` prepended to PATH |
+| `carat self install`     | Install-or-update carat itself from the canonical repo (`OrelSokolov/carat.cr`); `carat self update` is the same thing |
 | `carat completion install` | Install shell autocompletion (bash / fish / zsh)                       |
 
 Both `install` and `update` accept:
@@ -267,7 +268,8 @@ sets it up first: `gem install crosspack && crosspack deps`.
 After that, carat updates itself like any other shard:
 
 ```bash
-carat update OrelSokolov/carat.cr
+carat self update        # = carat update OrelSokolov/carat.cr;
+                          # carat self install does the same (install-or-update)
 ```
 
 Rebuilding over the running binary is safe (build-to-temp + rename).

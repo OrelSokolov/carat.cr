@@ -11,7 +11,7 @@ require "file_utils"
 require "colorize"
 
 module Carat
-  VERSION = "0.6.0"
+  VERSION = "0.7.0"
 
   class Error < Exception
   end
@@ -841,6 +841,9 @@ module Carat
       carat exec <cmd> ...  Run <cmd> with ./.carat/bin prepended to PATH
       carat completion install
                             Shell autocompletion (bash/fish; zsh hint)
+      carat self install   Install-or-update carat itself from the canonical
+                            repository (OrelSokolov/carat.cr)
+      carat self update    The same thing (alias of carat self install)
 
     Options:
       --with-examples      Also build the optional examples: section
@@ -862,7 +865,23 @@ module Carat
   TEXT
 
   # Подкоманды для автокомплита; "__complete" скрытая — не показывается.
-  COMMANDS = ["install", "update", "dev", "only", "exec", "completion"]
+  COMMANDS = ["install", "update", "dev", "only", "exec", "completion", "self"]
+
+  # Канонический репозиторий carat — источник для `carat self ...`.
+  CARAT_SOURCE = "OrelSokolov/carat.cr"
+
+  # `carat self install` / `carat self update` — одно и то же:
+  # install-or-update самого carat из канонического репозитория. Если
+  # указатель версии уже есть (~/.carat/shards/carat/current) — путь update
+  # с semver-сравнением, иначе — полная установка.
+  def self.self_command(with_examples : Bool = false, system : Bool = false) : Nil
+    installer = GlobalInstaller.new(CARAT_SOURCE, with_examples, system)
+    if File.exists?(Paths.current_pointer("carat"))
+      installer.update
+    else
+      installer.install
+    end
+  end
 
   def self.run(argv : Array(String)) : Nil
     # bash `complete -C carat carat` protocol: bash runs us with COMP_LINE/
@@ -919,6 +938,14 @@ module Carat
       else
         raise Error.new("usage: carat completion install")
       end
+    when "self"
+      unless {"install", "update"}.includes?(argv[1]?)
+        raise Error.new("usage: carat self install|update")
+      end
+      rest = argv.size > 2 ? argv[2..] : [] of String
+      with_examples = !rest.delete("--with-examples").nil?
+      system = !rest.delete("--system").nil?
+      self_command(with_examples, system)
     when "--version", "-v", "version"
       puts VERSION
     when "--help", "-h", "help", nil
@@ -973,6 +1000,7 @@ module Carat
       else                   [] of String
       end
     when "completion" then ["install"]
+    when "self"       then ["install", "update"]
     else                   [] of String
     end
   end

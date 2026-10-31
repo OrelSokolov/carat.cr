@@ -230,6 +230,17 @@ keys, so the dependency stays a normal shard.
 4. **Build** — every `binaries:` entry is compiled with
    `crystal build --release` from the stored copy and validated by magic
    bytes (ELF / Mach-O / PE) before it's allowed into the bin dir.
+   Entries build in a worker pool: concurrent `crystal build` processes
+   scale ~N in wall-clock, and the pool width is derived from the
+   machine's current state (CPU cores, `MemAvailable` / the peak
+   compiler RSS measured while the first build warms its cache slot):
+   `workers = min(cores, MemAvailable * 0.7 / peak_rss, 8)`. Before
+   handing out each next job a gate re-checks free RAM and stalls the
+   queue when it runs low, and a build that still died (an OOM is
+   exit 137 / SIGKILL) is retried once sequentially. Each worker keeps
+   its own persistent compiler cache (`<shard>/.carat/cache/jN`) —
+   concurrent compilers race on the shared `~/.cache/crystal`. Set
+   `CARAT_JOBS=N` to bypass the adaptive sizing (benchmarks, A/B runs).
 5. **Link** — the binary is renamed into `~/.carat/bin/`. Overwriting an
    existing binary always prints `WARNING: OVERWRITING WITH NEW BINARY` and
    is recorded in the audit log (`~/.carat/logs/carat.log`), so silent
@@ -248,6 +259,7 @@ keys, so the dependency stays a normal shard.
 ~/.carat/tmp/                    staging for clones
 ./.carat/bin/                    project binaries (carat install / carat exec)
 ./.carat/examples/               project example binaries (--with-examples)
+./.carat/cache/jN/               per-worker crystal compiler caches (build pool)
 ```
 
 Only self-contained binaries ever go into the bin dir — no assets, no

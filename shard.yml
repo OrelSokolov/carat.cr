@@ -1,8 +1,13 @@
 name: carat
-version: 0.8.0
+version: 0.9.0
 authors:
   - Oleg Sokolov
 description: Package manager for Crystal — RubyGems-style workflow for shard binaries
 license: MIT
+
+# BuildPool sizing: cores + MemAvailable + measured peak compiler RSS
+dependencies:
+  sysinfo:
+    github: OrelSokolov/sysinfo.cr
 binaries:
   - carat

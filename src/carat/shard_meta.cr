@@ -29,12 +29,20 @@ module Carat
     #                      ~/Applications на macOS
     #   desktop: false   — ярлык на рабочем столе (в дополнение к menu, не
     #                      вместо него)
+    #   args: [--no-dir] — аргументы команды запуска в нативных лаунчерах
+    #                      (Exec= в .desktop, Arguments в .lnk,
+    #                      CFBundleArguments в Info.plist); строка делится
+    #                      по пробелам, список — по токену на элемент.
+    #                      Терминальный запуск (bin на PATH) их не получает
     struct Launchers
       getter? terminal : Bool
       getter? menu : Bool
       getter? desktop : Bool
+      getter args : Array(String)
 
-      def initialize(@terminal : Bool = true, @menu : Bool = false, @desktop : Bool = false)
+      def initialize(@terminal : Bool = true, @menu : Bool = false,
+                     @desktop : Bool = false,
+                     @args : Array(String) = [] of String)
       end
 
       # Нужен ли бинарнику app-каталог/иконка/нативные лаунчеры.
@@ -151,13 +159,14 @@ module Carat
             main = spec["main"]?.try(&.as_s?) || File.join("src", "#{name}.cr")
             prebuild = spec["prebuild"]?.try(&.as_s?) || e_pb
             # `launchers:` — desktop-интеграция: terminal (дефолт true),
-            # menu, desktop (дефолт false) — см. Launchers
+            # menu, desktop (дефолт false), args — см. Launchers
             launchers = Launchers.new
             if l = spec["launchers"]?.try(&.as_h?)
               launchers = Launchers.new(
                 terminal: launcher_flag(l, "terminal", true),
                 menu: launcher_flag(l, "menu", false),
-                desktop: launcher_flag(l, "desktop", false))
+                desktop: launcher_flag(l, "desktop", false),
+                args: launcher_args(l))
             end
             specs << BinarySpec.new(name.as_s, main, prebuild,
               spec["flags"]? || e_flags || a_flags, spec["link_flags"]? || e_link || a_link,
@@ -172,6 +181,22 @@ module Carat
     private def self.launcher_flag(node : Hash(YAML::Any, YAML::Any), key : String, default : Bool) : Bool
       b = node[key]?.try(&.as_bool?)
       b.nil? ? default : b
+    end
+
+    # launchers:args — строка (делится по пробелам) или список строк (по
+    # токену на элемент, пробелы внутри сохраняются); прочие типы и
+    # не-строчные элементы игнорируются.
+    private def self.launcher_args(node : Hash(YAML::Any, YAML::Any)) : Array(String)
+      raw = node["args"]?
+      return [] of String unless raw
+      case raw.raw
+      when String then raw.as_s.split
+      when Array
+        raw.as_a.each_with_object([] of String) do |v, acc|
+          acc << v.as_s if v.as_s?
+        end
+      else [] of String
+      end
     end
 
     # The reserved `all:`/`each:` key: prebuild/flags/link_flags without

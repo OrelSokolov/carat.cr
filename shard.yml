@@ -1,5 +1,5 @@
 name: carat
-version: 0.13.1
+version: 0.15.0
 authors:
   - Oleg Sokolov
 description: Package manager for Crystal — RubyGems-style workflow for shard binaries

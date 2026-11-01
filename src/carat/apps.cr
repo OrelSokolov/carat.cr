@@ -137,7 +137,7 @@ module Carat
         created = [] of String
         if l.menu?
           lnk = File.join(menu, "Microsoft", "Windows", "Start Menu", "Programs", "#{name}.lnk")
-          stmts += shortcut_ps(ps_quote(lnk), ps_quote(app_bin), icon)
+          stmts += shortcut_ps(ps_quote(lnk), ps_quote(app_bin), icon, arguments_ps(l))
           created << lnk
         end
         if l.desktop?
@@ -145,7 +145,7 @@ module Carat
           # путь собирается в PS: Join-Path (GetFolderPath 'Desktop') name.lnk
           stmts += shortcut_ps(
             "(Join-Path ([Environment]::GetFolderPath('Desktop')) '#{name}.lnk')",
-            ps_quote(app_bin), icon)
+            ps_quote(app_bin), icon, arguments_ps(l))
           created << desktop
         end
         unless Carat.shell.run("powershell", ["-NoProfile", "-Command", stmts], nil)
@@ -157,11 +157,14 @@ module Carat
       # PS-фрагмент одного ярлыка: path — уже PS-строка или выражение.
       # Строки вместо heredoc: heredoc внутри макро-ветки компилятор не
       # разворачивает (unexpected token <<).
-      private def self.shortcut_ps(path : String, target : String, icon : String?) : String
+      private def self.shortcut_ps(path : String, target : String, icon : String?,
+                                   arguments : String? = nil) : String
         icon_stmt = icon.try { |i| "$s.IconLocation = '#{ps_quote(i)},0';" } || ""
+        args_stmt = arguments.try { |a| "$s.Arguments = '#{a.gsub('\'', "''")}';" } || ""
         [
           "$s = (New-Object -ComObject WScript.Shell).CreateShortcut(#{path});",
           "$s.TargetPath = '#{target}';",
+          args_stmt,
           icon_stmt,
           "$s.Save();",
           "Write-Output $s.FullName;",
@@ -170,6 +173,15 @@ module Carat
 
       private def self.ps_quote(s : String) : String
         s.gsub("/", "\\").gsub('\'', "''")
+      end
+
+      # Аргументы запуска (launchers:args) для Arguments ярлыка: токены
+      # через пробел (WScript.Shell принимает их одной строкой); только
+      # кавычка PS-экранируется — ps_quote здесь нельзя, он ломал бы
+      # слэши в значениях аргументов.
+      private def self.arguments_ps(l : ShardMeta::Launchers) : String?
+        return nil if l.args.empty?
+        l.args.join(" ")
       end
     {% elsif flag?(:darwin) %}
       # menu → .app-бандл в ~/Applications (Launchpad = меню macOS);
@@ -184,7 +196,7 @@ module Carat
         created = [] of String
         if l.menu? || !l.desktop?
           bundle = make_bundle(name, display, app_bin, icon_file, app_dir,
-            File.join(home, "Applications"))
+            File.join(home, "Applications"), l.args)
           created << bundle
           if l.desktop?
             link = File.join(home, "Desktop", "#{display}.app")
@@ -194,7 +206,7 @@ module Carat
           end
         else # только desktop: бандл прямо на рабочем столе
           created << make_bundle(name, display, app_bin, icon_file, app_dir,
-            File.join(home, "Desktop"))
+            File.join(home, "Desktop"), l.args)
         end
         created
       end
@@ -203,7 +215,7 @@ module Carat
       # Info.plist связывает их.
       private def self.make_bundle(name : String, display : String, app_bin : String,
                                    icon_file : String?, app_dir : String,
-                                   parent : String) : String
+                                   parent : String, args : Array(String) = [] of String) : String
         bundle = File.join(parent, "#{display}.app")
         FileUtils.rm_rf(bundle) if Dir.exists?(bundle)
         macos = File.join(bundle, "Contents", "MacOS")
@@ -226,11 +238,18 @@ module Carat
           icon_file ? "<key>CFBundleIconFile</key><string>app</string>" : "",
           "<key>CFBundleIdentifier</key><string>carat.#{name}</string>",
           "<key>CFBundlePackageType</key><string>APPL</string>",
+          # launchers:args — LaunchServices передаёт их бинарнику бандла
+          args.empty? ? "" : %{<key>CFBundleArguments</key>} +
+            %{<array>#{args.map { |a| %{<string>#{xml_escape(a)}</string>} }.join }</array>},
           "</dict>",
           "</plist>",
         ].reject(&.empty?).join("\n")
         File.write(File.join(bundle, "Contents", "Info.plist"), plist)
         bundle
+      end
+
+      private def self.xml_escape(s : String) : String
+        s.gsub('&', "&amp;").gsub('<', "&lt;").gsub('>', "&gt;")
       end
     {% else %}
       # XDG .desktop — единообразно на всех дистрибутивах Linux/BSD:
@@ -244,7 +263,7 @@ module Carat
           s << "[Desktop Entry]\n"
           s << "Type=Application\n"
           s << "Name=#{name}\n"
-          s << "Exec=\"#{app_bin}\"\n"
+          s << "Exec=\"#{app_bin}\"#{desktop_args(l)}\n"
           s << "Icon=#{File.join(app_dir, "icons", icon_file)}\n" if icon_file
           s << "Terminal=false\n"
           s << "Categories=Utility;\n"
@@ -279,6 +298,19 @@ module Carat
           end
         end
         File.join(Carat.env.home, "Desktop")
+      end
+
+      # Аргументы запуска (launchers:args) для Exec= .desktop: пробел между
+      # токенами, токен с пробелами — в кавычках, спецсимволы (\, ", `, $, %)
+      # экранируются обратным слэшем по спецификации XDG.
+      private def self.desktop_args(l : ShardMeta::Launchers) : String
+        return "" if l.args.empty?
+        " " + l.args.join(" ") { |a| desktop_quote(a) }
+      end
+
+      private def self.desktop_quote(arg : String) : String
+        escaped = arg.gsub(/[\\"`$%]/) { |c| "\\#{c}" }
+        arg.includes?(' ') ? "\"#{escaped}\"" : escaped
       end
     {% end %}
 

@@ -2,9 +2,13 @@
   <img src="logo.png" width="180" alt="carat logo — a faceted diamond" />
 </p>
 
-# carat
+# Carat - Painless software distribution for Crystal shards
 
-**All-in-one package manager for Crystal.**
+Supports crossplatform install for:
+
+- console applications
+- gui applications with your logo
+
 
 Extends `shard.yml` with a `binaries:` section — **fully compatible with
 standard Crystal installs**: `shards install` / `shards build` / shard.lock
@@ -245,6 +249,7 @@ binaries:
     launchers:
       menu: true               # application menu entry
       desktop: true            # shortcut on the desktop (in addition)
+      args: [--no-dir]         # launcher command arguments (see below)
   helper: {}                   # regular CLI binary, business as usual
 ```
 
@@ -255,6 +260,15 @@ The three launcher flags:
 | `terminal` | `true` | The usual carat install: binary in `~/.carat/bin`, on PATH. `false` moves it off the PATH into its own app dir (`~/.carat/apps/myapp/bin/`) — for pure-GUI apps |
 | `menu` | `false` | Entry in the application menu: XDG `.desktop` on Linux, Start Menu shortcut on Windows, `.app` bundle in `~/Applications` on macOS |
 | `desktop` | `false` | Shortcut on the user's desktop, **in addition** to the menu entry — not instead of it |
+
+`args:` (optional) adds command arguments to the native launchers —
+`Exec=` in the `.desktop`, `Arguments` in the `.lnk`, `CFBundleArguments`
+in the bundle's Info.plist. A string is split on whitespace
+(`args: --no-dir --theme Dark`), a list carries each element as one
+verbatim token (`args: ["--msg", "keep this together"]`). The terminal
+binary on PATH gets no arguments — you pass those yourself. Typical use:
+launching a GUI editor folderless, when the launcher's cwd (`$HOME`,
+often a huge directory) would otherwise become its workspace.
 
 On install, icons land in `~/.carat/apps/myapp/icons/` and the native
 launchers are generated for the platform:

@@ -95,9 +95,12 @@ your terminal.
 | ------------------------ | ------------------------------------------------------------------- |
 | `carat install <src>`    | Global install: clone → release build → binaries in `~/.carat/bin`. Resolves like shards: the latest release tag when the repo has tags, otherwise the default branch HEAD |
 | `carat install head <src>` | Always the default branch HEAD (fresh master, experimental): pinned per commit (`version+git.commit.<sha>`), so `carat update head` follows every push |
+| `carat install <src> --version 1.1.0` | Install a specific release tag (like `gem install gem --version`); fails with the list of available versions if the tag is missing |
 | `carat install .`        | Global install of the shard in the current dir (local development)  |
 | `carat install`          | In a project: delegates to `shards install`, builds `binaries:` into `./.carat/bin` |
 | `carat update <src>`     | Update if the remote identity is newer (tag: semver decides; head: any new commit) |
+| `carat user remove <name>` | Uninstall a user-scope shard: binaries from `~/.carat/bin`, examples, GUI apps with their launchers, the source store and version pointer |
+| `carat system remove <name>` | Same for a `--system` install: binaries from `/usr/local/bin` (`%ProgramFiles%\carat\bin` on Windows); examples, apps and the store are cleaned the same way. Needs root/Administrator |
 | `carat update head <src>` | Re-resolve the default branch HEAD and rebuild                     |
 | `carat update`          | In a project: delegates to `shards update`, rebuilds `./.carat/bin` |
 | `carat dev install`     | Like `install`, but builds with a plain `crystal build` (no `--release`): faster codegen for development iteration |
@@ -119,6 +122,14 @@ Both `install` and `update` accept:
   root/Administrator; without the rights carat fails fast — before any
   clone or build — with a clear error. The version store stays in
   `~/.carat/shards`, so `carat update` keeps working.
+
+`install` also accepts `--version <ver>` (space or `=` form): install a
+specific release tag instead of the latest — `carat install owner/repo
+--version 1.1.0`, like `gem install gem --version`. The tag name is
+normalized through semver (`v1.1.0` matches `1.1.0`); if there is no such
+tag, carat fails with the list of available versions. Combine with
+`--system` as usual, and remove later with `carat user remove <name>` /
+`carat system remove <name>`.
 
 ## Make your shard instantly installable
 
@@ -360,13 +371,15 @@ carat completion install
 
 What completes:
 
-- `carat <TAB>` — subcommands (`install`, `update`, `exec`, `completion`,
-  `--help`, `--version`)
+- `carat <TAB>` — subcommands (`install`, `update`, `user`, `system`, `exec`,
+  `completion`, `--help`, `--version`)
 - `carat exec <TAB>` — the binaries of the current project (`./.carat/bin`):
   `carat` itself is excluded, and only the first argument is completed —
   the words after it belong to the launched program, and a fully typed
   word is never re-offered (no duplicate inserts on repeated TABs)
 - `carat update <TAB>` — globally installed shards
+- `carat user remove <TAB>` / `carat system remove <TAB>` — globally
+  installed shards
 
 ## Installing carat
 
@@ -402,7 +415,7 @@ GitHub and local checkouts.
 Next:
 
 - Shardbox lookup for bare names, `carat use <name>@<ver>` version switching
-- `carat list` / `carat uninstall`
+- `carat list`
 - Full dependency resolution on a fork of shards — carat as the single
   package manager replacing it
 

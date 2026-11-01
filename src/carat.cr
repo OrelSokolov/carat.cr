@@ -13,7 +13,7 @@ require "sysinfo"
 require "marcel_cr"
 
 module Carat
-  VERSION = "0.13.1"
+  VERSION = "0.14.0"
 
   class Error < Exception
   end
@@ -1316,9 +1316,13 @@ module Carat
     # only_shards=true — только клонирование и `shards install`, без сборки
     # бинарников (`carat only install`);
     # head=true — всегда HEAD дефолтной ветки (`carat install head <src>`),
-    # игнорируя релизные теги — свежий master, пускай экспериментальный.
+    # игнорируя релизные теги — свежий master, пускай экспериментальный;
+    # version — точная версия (`carat install <src> --version 1.1.0`, как
+    # `gem install foo --version`): ставится тег с этой версией вместо
+    # старшего semver-тега.
     def initialize(@src : String, @with_examples : Bool = false, @system : Bool = false,
-                   @release : Bool = true, @only_shards : Bool = false, @head : Bool = false)
+                   @release : Bool = true, @only_shards : Bool = false, @head : Bool = false,
+                   @version : String? = nil)
     end
 
     def install : Nil
@@ -1446,6 +1450,14 @@ module Carat
     # shards: старший semver-тег, HEAD дефолтной ветки — только если тегов
     # нет; head-режим всегда берёт HEAD.
     private def stage(source : Source) : {ShardMeta, String, String}
+      # --version: точный тег вместо старшего; конфликтует с head и имеет
+      # смысл только для git-источников (локальный каталог не версионирован).
+      if @version
+        raise Error.new("--version cannot be combined with head") if @head
+        if source.kind.local?
+          raise Error.new("--version is only valid for git sources: #{source.location} is a local directory")
+        end
+      end
       case source.kind
       in Source::Kind::Local
         meta = ShardMeta.from_file(File.join(source.location, "shard.yml"))
@@ -1453,7 +1465,13 @@ module Carat
         Carat.copy_tree(source.location, staged)
         {meta, staged, meta.version}
       in Source::Kind::Git
-        tag = @head ? nil : latest_tag(source.location)
+        tag = if @head
+                nil
+              elsif v = @version
+                resolve_tag(source.location, v)
+              else
+                latest_tag(source.location)
+              end
         hint = source.name || "shard"
         staged = File.join(Paths.tmp_dir, "#{hint}-#{Random::Secure.hex(4)}")
         puts "Cloning #{source.location} (#{tag || "default branch HEAD"})..."
@@ -1481,13 +1499,11 @@ module Carat
       end
     end
 
-    # Старший semver-тег репозитория (резолв как у shards: git-зависимость
-    # без версии — это последний релизный тег, а не HEAD ветки). Аннотиро-
-    # ванные теги идут двумя строками: ^{} (peeled) указывает на сам коммит
-    # и перебивает указатель тег-объекта. Нет подходящих тегов — nil,
-    # caller клонирует HEAD дефолтной ветки.
-    private def latest_tag(url : String) : String?
-      refs = Carat.git(["ls-remote", "--tags", url]) || return nil
+    # Все semver-теги репозитория: {имя тега => коммит}. Аннотированные теги
+    # идут двумя строками: ^{} (peeled) указывает на сам коммит и перебивает
+    # указатель тег-объекта. Нет подходящих тегов — пустый хэш.
+    private def remote_tags(url : String) : Hash(String, String)
+      refs = Carat.git(["ls-remote", "--tags", url]) || return {} of String => String
       tags = {} of String => String
       refs.each_line do |line|
         next unless match = line.match(/\A([0-9a-f]{40})\trefs\/tags\/([^^\s]+)(\^\{\})?\z/)
@@ -1497,7 +1513,31 @@ module Carat
           tags[name] = sha
         end
       end
-      tags.max_by? { |name, _| SemVer.parse(name) }.try(&.[0])
+      tags
+    end
+
+    # Старший semver-тег репозитория (резолв как у shards: git-зависимость
+    # без версии — это последний релизный тег, а не HEAD ветки). Нет подходящих
+    # тегов — nil, caller клонирует HEAD дефолтной ветки.
+    private def latest_tag(url : String) : String?
+      remote_tags(url).max_by? { |name, _| SemVer.parse(name) }.try(&.[0])
+    end
+
+    # Тег с точной версией для `--version` (как `gem install --version`):
+    # имя тега нормализуется через SemVer (v-префикс, build-метаданные), то
+    # есть `--version 1.1.0` находит и тег v1.1.0. Нет такого тега — ошибка
+    # со списком доступных версий.
+    private def resolve_tag(url : String, version : String) : String
+      unless SemVer.parsable?(version)
+        raise Error.new("invalid --version: #{version} (expected e.g. 1.1.0)")
+      end
+      wanted = SemVer.parse(version)
+      tags = remote_tags(url)
+      match = tags.keys.find { |name| SemVer.parse(name) == wanted }
+      return match if match
+      available = tags.keys.sort_by { |name| SemVer.parse(name) }.reverse.join(", ")
+      raise Error.new("#{url}: no release tag for version #{version}" \
+                      "#{available.empty? ? " (the repo has no release tags)" : " (available: #{available})"}")
     end
 
     # Перенос staging-каталога в стор версий ~/.carat/shards/<name>/<identity>/
@@ -1512,6 +1552,102 @@ module Carat
     private def installed_version(name : String) : String?
       pointer = Paths.current_pointer(name)
       File.exists?(pointer) ? File.read(pointer).strip : nil
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # Удаление глобальной установки (carat user|system remove)
+  # ------------------------------------------------------------------
+
+  # `carat user remove <name>` / `carat system remove <name>` — полное
+  # удаление глобально установленного шарда, зеркальное установке:
+  #  - бинарники: user → ~/.carat/bin, system → системный каталог
+  #    (/usr/local/bin, %ProgramFiles%\carat\bin);
+  #  - примеры: ~/.carat/examples (всегда пользовательский каталог, даже
+  #    для --system-установки);
+  #  - GUI-приложения: ~/.carat/apps/<name> + нативные лаунчеры из
+  #    manifest (XDG .desktop / .lnk / .app-бандлы);
+  #  - стор исходников ~/.carat/shards/<name>/ со всеми версиями и
+  #    current-указателем.
+  class Remover
+    def initialize(@name : String, @system : Bool = false)
+    end
+
+    def remove : Nil
+      pointer = Paths.current_pointer(@name)
+      unless File.exists?(pointer)
+        raise Error.new("#{@name} is not installed globally (#{pointer} not found)")
+      end
+      identity = File.read(pointer).strip
+      store = Paths.shard_dir(@name, identity)
+      bin_dir = @system ? Paths.system_bin_dir : Paths.bin_dir
+      # системный каталог требует прав root/Administrator — падаем до
+      # любых удалений, с той же подсказкой, что и установка
+      Carat.check_writable_dir(bin_dir) if @system
+
+      removed = [] of String
+      if Dir.exists?(store)
+        meta = ShardMeta.from_file(File.join(store, "shard.yml"))
+        removed.concat(remove_binaries(meta, bin_dir))
+        removed.concat(remove_apps(meta))
+      else
+        Carat.warning("WARNING: source store not found: #{store} — removing the pointer only")
+      end
+
+      FileUtils.rm_rf(File.dirname(pointer))
+      Carat.logger.log("remove #{@name} #{identity}: #{removed.empty? ? "no binaries" : removed.join(", ")}")
+      puts "Removed #{@name} #{identity}"
+      removed.each { |path| puts "  deleted #{path}" }
+    end
+
+    private def remove_binaries(meta : ShardMeta, bin_dir : String) : Array(String)
+      removed = [] of String
+      other_scope = @system ? "user" : "system"
+      (meta.binaries.specs + meta.examples.specs).each do |spec|
+        path = File.join(bin_dir, spec.name)
+        if File.exists?(path)
+          File.delete(path)
+          removed << path
+        else
+          Carat.warning("WARNING: #{path} not found — maybe installed with --system? (try: carat #{other_scope} remove #{@name})")
+        end
+      end
+      removed
+    end
+
+    # GUI-приложения (`launchers:`): app-каталог удаляется целиком, нативные
+    # лаунчеры — по списку из manifest (пути записаны при установке).
+    private def remove_apps(meta : ShardMeta) : Array(String)
+      removed = [] of String
+      meta.binaries.specs.select(&.launchers.app_integration?).each do |spec|
+        app_dir = File.join(Paths.apps_dir, spec.name)
+        manifest = File.join(app_dir, "manifest")
+        if File.exists?(manifest)
+          File.read(manifest).each_line do |line|
+            path = line.strip
+            next if path.empty?
+            begin
+              if File.symlink?(path)
+                File.delete(path)
+                removed << path
+              elsif Dir.exists?(path)
+                FileUtils.rm_rf(path)
+                removed << path
+              elsif File.exists?(path)
+                File.delete(path)
+                removed << path
+              end
+            rescue e : File::Error
+              Carat.warning("WARNING: could not remove #{path} (#{e.message}) — remove it manually")
+            end
+          end
+        end
+        if Dir.exists?(app_dir)
+          FileUtils.rm_rf(app_dir)
+          removed << app_dir
+        end
+      end
+      removed
     end
   end
 
@@ -1619,6 +1755,17 @@ module Carat
                             Re-resolve the default branch HEAD and rebuild
       carat update          In a project: delegates to shards update + rebuild
                             binaries into ./.carat/bin
+      carat user remove <name>
+                            Remove a globally installed (user scope) shard:
+                            binaries from ~/.carat/bin, examples, GUI apps
+                            with their launchers, the source store and the
+                            version pointer
+      carat system remove <name>
+                            Same for a --system install: removes binaries from
+                            the system dir (/usr/local/bin,
+                            %ProgramFiles%\\carat\\bin on Windows); examples,
+                            apps and the store are cleaned the same way.
+                            Needs root/Administrator — fails fast if not
       carat dev install     Like install, but builds without --release
                             (plain crystal build: faster codegen, for iteration)
       carat dev update      Same for update
@@ -1641,6 +1788,10 @@ module Carat
                             %ProgramFiles%\\carat\\bin + system PATH).
                             Needs root/Administrator — fails fast with a
                             clear error if not.
+      --version <ver>      Install a specific version (git release tag), like
+                            `gem install gem --version`: carat install
+                            owner/repo --version 1.1.0. Without it the latest
+                            release tag is resolved (shards behavior)
 
     Directories:
       ~/.carat/bin/                  global binaries (only entry points)
@@ -1668,10 +1819,27 @@ module Carat
   TEXT
 
   # Подкоманды для автокомплита; "__complete" скрытая — не показывается.
-  COMMANDS = ["install", "update", "dev", "only", "shards", "exec", "completion", "self"]
+  COMMANDS = ["install", "update", "user", "system", "dev", "only", "shards", "exec", "completion", "self"]
 
   # Канонический репозиторий carat — источник для `carat self ...`.
   CARAT_SOURCE = "OrelSokolov/carat.cr"
+
+  # `--flag value` / `--flag=value`: достаёт значение флага из аргументов и
+  # убирает его (и значение) из списка. Флага нет — nil.
+  private def self.option_value(rest : Array(String), flag : String) : String?
+    if i = rest.index(flag)
+      rest.delete_at(i)
+      value = rest[i]?
+      raise Error.new("#{flag} requires a value (#{flag} 1.1.0)") unless value
+      rest.delete_at(i)
+      value
+    elsif i = rest.index { |a| a.starts_with?("#{flag}=") }
+      value = rest[i][(flag.size + 1)..]
+      raise Error.new("#{flag} requires a value (#{flag} 1.1.0)") if value.empty?
+      rest.delete_at(i)
+      value
+    end
+  end
 
   # `carat self install` / `carat self update` — install-or-update самого carat
   # из канонического репозитория. Если указатель версии уже есть
@@ -1717,8 +1885,9 @@ module Carat
       with_examples = !rest.delete("--with-examples").nil?
       system = !rest.delete("--system").nil?
       head = !rest.delete("head").nil?
+      version = option_value(rest, "--version")
       if src = rest[0]?
-        GlobalInstaller.new(src, with_examples, system, release, only_shards, head).install
+        GlobalInstaller.new(src, with_examples, system, release, only_shards, head, version).install
       else
         raise Error.new("--system is only valid for global installs (carat install <src>)") if system
         ProjectInstaller.new("install", with_examples, release, only_shards).run
@@ -1734,6 +1903,12 @@ module Carat
         raise Error.new("--system is only valid for global installs (carat update <src>)") if system
         ProjectInstaller.new("update", with_examples, release, only_shards).run
       end
+    when "user", "system"
+      name = argv[2]?
+      unless argv[1]? == "remove" && name
+        raise Error.new("usage: carat #{command} remove <shard>")
+      end
+      Remover.new(name, system: command == "system").remove
     when "exec"
       cmd = argv[1]?
       raise Error.new("usage: carat exec <cmd> [args]") unless cmd
@@ -1798,8 +1973,14 @@ module Carat
     case typed.first?
     when nil       then COMMANDS + ["--help", "--version"]
     when "exec"    then typed.size == 1 ? exec_candidates : [] of String
-    when "install" then typed.size == 1 ? ["head", "--with-examples", "--system"] : [] of String
+    when "install" then typed.size == 1 ? ["head", "--with-examples", "--system", "--version"] : [] of String
     when "update"  then installed_shards + ["head", "--with-examples", "--system"]
+    when "user", "system"
+      case typed[1]?
+      when nil      then ["remove"]
+      when "remove" then installed_shards
+      else               [] of String
+      end
     when "dev", "only", "shards"
       case typed[1]?
       when nil       then ["install", "update"]

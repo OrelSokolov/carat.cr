@@ -15,7 +15,7 @@ require "marcel_cr"
 require "./carat/*"
 
 module Carat
-  VERSION = "0.14.0"
+  VERSION = "0.15.0"
 
   class Error < Exception
   end

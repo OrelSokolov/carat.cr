@@ -89,6 +89,21 @@ module Carat
                             `gem install gem --version`: carat install
                             owner/repo --version 1.1.0. Without it the latest
                             release tag is resolved (shards behavior)
+      --build              Skip prebuilt release binaries: always compile from
+                            source, even when the release ships matching
+                            prebuilt assets
+
+    Prebuilt binaries:
+      On a tagged GitHub install carat first looks for prebuilt release
+      assets matching your platform (linux/macos/windows, x86_64/arm64) —
+      no local toolchain needed. Canonical name:
+        {name}-{version}-{os}-{arch}.tar.gz (or .zip)
+      Common synonyms are matched too (darwin/macos, amd64/x86_64,
+      aarch64/arm64, v-prefixed or missing version, any token order).
+      If nothing matches (or anything fails), carat silently falls back
+      to compiling from source — prebuilt never breaks an install.
+      GITHUB_TOKEN / GH_TOKEN in the environment is used for private
+      repos and rate limits. `--build` forces source compilation.
 
     Directories:
       ~/.carat/bin/                  global binaries (only entry points)
@@ -181,23 +196,27 @@ module Carat
       rest = argv[1..]
       with_examples = !rest.delete("--with-examples").nil?
       system = !rest.delete("--system").nil?
+      build = !rest.delete("--build").nil?
       head = !rest.delete("head").nil?
       version = option_value(rest, "--version")
       if src = rest[0]?
-        GlobalInstaller.new(src, with_examples, system, release, only_shards, head, version).install
+        GlobalInstaller.new(src, with_examples, system, release, only_shards, head, version, build).install
       else
         raise Error.new("--system is only valid for global installs (carat install <src>)") if system
+        raise Error.new("--build is only valid for global installs (carat install <src>)") if build
         ProjectInstaller.new("install", with_examples, release, only_shards).run
       end
     when "update"
       rest = argv[1..]
       with_examples = !rest.delete("--with-examples").nil?
       system = !rest.delete("--system").nil?
+      build = !rest.delete("--build").nil?
       head = !rest.delete("head").nil?
       if src = rest[0]?
-        GlobalInstaller.new(src, with_examples, system, release, only_shards, head).update
+        GlobalInstaller.new(src, with_examples, system, release, only_shards, head, nil, build).update
       else
         raise Error.new("--system is only valid for global installs (carat update <src>)") if system
+        raise Error.new("--build is only valid for global installs (carat update <src>)") if build
         ProjectInstaller.new("update", with_examples, release, only_shards).run
       end
     when "user", "system"
@@ -270,8 +289,8 @@ module Carat
     case typed.first?
     when nil       then COMMANDS + ["--help", "--version"]
     when "exec"    then typed.size == 1 ? exec_candidates : [] of String
-    when "install" then typed.size == 1 ? ["head", "--with-examples", "--system", "--version"] : [] of String
-    when "update"  then installed_shards + ["head", "--with-examples", "--system"]
+    when "install" then typed.size == 1 ? ["head", "--with-examples", "--system", "--version", "--build"] : [] of String
+    when "update"  then installed_shards + ["head", "--with-examples", "--system", "--build"]
     when "user", "system"
       case typed[1]?
       when nil      then ["remove"]
@@ -281,8 +300,8 @@ module Carat
     when "dev", "only", "shards"
       case typed[1]?
       when nil       then ["install", "update"]
-      when "install" then ["head", "--with-examples", "--system"]
-      when "update"  then installed_shards + ["head", "--with-examples", "--system"]
+      when "install" then ["head", "--with-examples", "--system", "--build"]
+      when "update"  then installed_shards + ["head", "--with-examples", "--system", "--build"]
       else                [] of String
       end
     when "completion" then ["install"]

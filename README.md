@@ -16,6 +16,10 @@ keep working untouched (shards simply ignores the extra key).
 
 - **Build and share your Crystal shards like Ruby gems** — a package can be
   a tool you *use right now*, not just a library you require.
+- **Prebuilt binaries out of the box** — when a release ships them,
+  `carat install` downloads the binary for your platform instead of
+  compiling: no local toolchain needed (see
+  [Prebuilt binaries](#prebuilt-binaries-release-assets)).
 - **System-wide install as a system binary** — `carat install owner/repo`
   puts a ready-to-run release binary into `~/.carat/bin` (on your PATH).
   One command, immediately useful. No manual installs, no PATH pain.
@@ -120,6 +124,8 @@ your terminal.
 Both `install` and `update` accept:
 
 - `--with-examples` — also build the optional `examples:` section (see below)
+- `--build` — skip prebuilt release binaries: always compile from source
+  (see [Prebuilt binaries](#prebuilt-binaries-release-assets))
 - `--system` — install binaries into the system directory instead of
   `~/.carat/bin`: `/usr/local/bin` on Linux/macOS (on PATH by default),
   `%ProgramFiles%\carat\bin` + the machine PATH on Windows. Requires
@@ -208,7 +214,9 @@ track fresh master — useful for experimental work-in-progress — with the
 install pinned per commit (`version+git.commit.<sha>`, the shard.lock
 notation), so updates follow every push even without a version bump.
 `carat self` tracks master this way (the canonical repo isn't tagged per
-release). No releases page, no tarballs, no install scripts.
+release). Version resolution itself needs no releases page and no install
+scripts — and when a release does ship prebuilt binaries, carat uses them
+(see [Prebuilt binaries](#prebuilt-binaries-release-assets)).
 
 `shards` ignores the extra `binaries:` key, so the shard stays a perfectly
 normal shard — `shards install` / `shards build` keep working (verified
@@ -320,6 +328,97 @@ preserved). The merged list is printed during the build, so what the
 compiler actually received is always visible. `shards` ignores these
 keys, so the dependency stays a normal shard.
 
+### Prebuilt binaries: release assets
+
+If the repository ships prebuilt binaries on a **GitHub release tag**,
+carat downloads them instead of compiling — no local Crystal toolchain
+needed:
+
+```
+$ carat install owner/tool
+Installed prebuilt tool 1.2.0 from tool-1.2.0-linux-x86_64.tar.gz (linux/x86_64)
+```
+
+This is pure auto-detection — no keys in shard.yml. On every **tagged**
+GitHub install carat looks through the release assets for one matching
+your platform, by convention:
+
+```
+{name}-{version}-{os}-{arch}.tar.gz | .zip
+      os: linux | macos | windows
+      arch: x86_64 | arm64 | universal (macos)
+```
+
+Matching is tolerant (tokens in any order and case, separators `-_.`):
+synonyms `darwin`≈`macos`, `amd64`/`x64`≈`x86_64`, `aarch64`≈`arm64`,
+version with or without `v` — or missing altogether. If the author's
+CI matrix had a cell for your platform, carat finds its artifact:
+
+```
+tool-1.2.0-linux-x86_64.tar.gz   # canonical
+tool-darwin-amd64.tar.gz         # synonyms
+Tool_1.2.0_x64_Linux.zip         # free form
+tool.exe                         # bare Windows binary
+```
+
+Safety rails — prebuilt can never break an install:
+
+- Anything wrong — no release, no matching asset, an ambiguous match
+  (two equal candidates, e.g. plain and `-bundled` variants), checksum
+  mismatch, archive without the expected binary — carat prints one line
+  and **falls back to compiling from source**, exactly as before.
+- musl-tagged Linux assets are skipped in favor of glibc ones (a
+  dynamic musl binary won't run on a glibc distro); musl-only releases
+  build from source.
+- The archive must contain each binary named as in `binaries:` (`.exe`
+  accepted on Windows); it is verified by magic bytes like a local
+  build and gets the usual overwrite WARNING + audit log.
+- If the release also ships `{asset}.sha256`, the archive checksum is
+  verified before install.
+
+Scope: tagged GitHub installs of release builds. `carat install head`,
+local directories, non-GitHub hosts and `carat dev` always build from
+source. `GITHUB_TOKEN` / `GH_TOKEN` in the environment is used for
+private repos and rate limits. To force compilation: `carat install
+owner/repo --build`.
+
+#### Shipping prebuilt binaries (for authors)
+
+Publish release assets for the matrix you actually test — one archive
+per `os`/`arch`, binary inside named as in `binaries:`:
+
+```yaml
+# .github/workflows/release.yml
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: linux-x86_64 }
+          - { os: macos-latest,   target: macos-universal }
+          - { os: windows-latest, target: windows-x86_64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+      - run: shards install
+      - run: crystal build --release src/tool.cr -o tool
+      - run: tar czf tool-${{ github.ref_name }}-${{ matrix.target }}.tar.gz tool
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: tool-*.tar.gz
+```
+
+(zip instead of `tar czf` on Windows.) After that `carat install
+you/tool` installs in seconds on every platform you build for. Linux
+note: build on the oldest Ubuntu you support — glibc is
+forward-compatible — and don't name the archive `musl` unless the
+binary is static.
+
 ## What happens on install
 
 1. **Fetch** — the source is resolved like shards resolves a git dependency:
@@ -331,7 +430,9 @@ keys, so the dependency stays a normal shard.
    and switchable later.
 3. **Resolve** — shards with `dependencies:` get a `shards install` run
    in the stored copy (the compiler resolves bare requires from lib/).
-4. **Build** — every `binaries:` entry is compiled with
+4. **Build** — on tagged GitHub installs carat first tries **prebuilt
+   release assets** (see above); otherwise every `binaries:` entry is
+   compiled with
    `crystal build --release` from the stored copy and validated by magic
    bytes (ELF / Mach-O / PE) before it's allowed into the bin dir.
    Entries build in a worker pool: concurrent `crystal build` processes

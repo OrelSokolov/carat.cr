@@ -9,6 +9,11 @@
 require "yaml"
 require "file_utils"
 require "colorize"
+require "json"
+require "digest"
+require "uri"
+require "http/client"
+require "compress/zip"
 require "sysinfo"
 require "marcel_cr"
 

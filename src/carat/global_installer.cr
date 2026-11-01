@@ -15,21 +15,23 @@ module Carat
     # игнорируя релизные теги — свежий master, пускай экспериментальный;
     # version — точная версия (`carat install <src> --version 1.1.0`, как
     # `gem install foo --version`): ставится тег с этой версией вместо
-    # старшего semver-тега.
+    # старшего semver-тега;
+    # force_build=true (`--build`) — не пробовать прекомпилированные
+    # ассеты релиза, сразу собирать из исходников.
     def initialize(@src : String, @with_examples : Bool = false, @system : Bool = false,
                    @release : Bool = true, @only_shards : Bool = false, @head : Bool = false,
-                   @version : String? = nil)
+                   @version : String? = nil, @force_build : Bool = false)
     end
 
     def install : Nil
       source = Carat.resolve_source(@src)
       Paths.ensure_global_dirs
       bin_dir = target_bin_dir
-      meta, staged, identity = stage(source)
+      meta, staged, identity, tag = stage(source)
       previous = installed_version(meta.name)
       store = promote(meta, staged, identity)
       Carat.install_dependencies(meta, store)
-      build_all(meta, store, bin_dir)
+      build_all(meta, store, bin_dir, source, tag)
       File.write(Paths.current_pointer(meta.name), identity)
       Carat.logger.log("install #{meta.name} #{identity} from #{source.location} to #{bin_dir} (previous: #{previous || "none"})")
       after_system_install(bin_dir)
@@ -44,7 +46,7 @@ module Carat
       source = Carat.resolve_source(@src)
       Paths.ensure_global_dirs
       bin_dir = target_bin_dir
-      meta, staged, identity = stage(source)
+      meta, staged, identity, tag = stage(source)
       installed = installed_version(meta.name)
       unless installed
         FileUtils.rm_rf(staged)
@@ -69,7 +71,7 @@ module Carat
       puts "Updating #{meta.name} #{installed} -> #{identity}"
       store = promote(meta, staged, identity)
       Carat.install_dependencies(meta, store)
-      build_all(meta, store, bin_dir)
+      build_all(meta, store, bin_dir, source, tag)
       File.write(Paths.current_pointer(meta.name), identity)
       Carat.logger.log("update #{meta.name} #{installed} -> #{identity} from #{source.location}")
       after_system_install(bin_dir)
@@ -81,10 +83,21 @@ module Carat
     end
 
     # Сборка бинарников (и примеров); в режиме only — пропускается, ставятся
-    # только зависимости.
-    private def build_all(meta : ShardMeta, store : String, bin_dir : String) : Nil
+    # только зависимости. Сначала — попытка прекомпилированных ассетов
+    # релиза (Prebuilt): теговая установка, GitHub-источник, не dev и не
+    # --build; любая неудача внутри — тихий откат на сборку из исходников.
+    private def build_all(meta : ShardMeta, store : String, bin_dir : String,
+                          source : Source, tag : String?) : Nil
       return if @only_shards
-      Carat.build_binaries(meta, store, bin_dir, @release)
+      prebuilt = false
+      if @release && !@force_build && tag &&
+         (gh = Prebuilt.github_repo(source.location)) &&
+         Prebuilt.install(meta, gh[0], gh[1], tag, bin_dir)
+        prebuilt = true
+      end
+      unless prebuilt
+        Carat.build_binaries(meta, store, bin_dir, @release)
+      end
       build_examples(meta, store)
       # GUI-приложения (`app:`) переезжают из bin_dir в ~/.carat/apps/<name>/
       # и получают иконку + нативный лаунчер.
@@ -137,15 +150,17 @@ module Carat
       puts "Examples -> #{Paths.examples_dir}"
     end
 
-    # Клонирование в staging-каталог. Возвращает {meta, staged, identity}:
-    # identity — то, что устанавливаем и пишем в current-указатель. Для
-    # релизного тега это version из shard.yml (стабильно, как в shard.lock);
-    # для HEAD — version+git.commit.<sha> (нотация shard.lock для веточных
-    # зависимостей): разный коммит master'а = разный identity, и update видит
-    # движение ветки даже без bump'а version. По умолчанию резолв как у
+    # Клонирование в staging-каталог. Возвращает {meta, staged, identity,
+    # tag}: identity — то, что устанавливаем и пишем в current-указатель.
+    # Для релизного тега это version из shard.yml (стабильно, как в
+    # shard.lock); для HEAD — version+git.commit.<sha> (нотация shard.lock
+    # для веточных зависимостей): разный коммит master'а = разный identity,
+    # и update видит движение ветки даже без bump'а version. tag — релизный
+    # тег, по которому клонировались (nil для HEAD/локального каталога):
+    # по нему Prebuilt ищет ассеты релиза. По умолчанию резолв как у
     # shards: старший semver-тег, HEAD дефолтной ветки — только если тегов
     # нет; head-режим всегда берёт HEAD.
-    private def stage(source : Source) : {ShardMeta, String, String}
+    private def stage(source : Source) : {ShardMeta, String, String, String?}
       # --version: точный тег вместо старшего; конфликтует с head и имеет
       # смысл только для git-источников (локальный каталог не версионирован).
       if @version
@@ -159,7 +174,7 @@ module Carat
         meta = ShardMeta.from_file(File.join(source.location, "shard.yml"))
         staged = File.join(Paths.tmp_dir, "#{meta.name}-#{Random::Secure.hex(4)}")
         Carat.copy_tree(source.location, staged)
-        {meta, staged, meta.version}
+        {meta, staged, meta.version, nil}
       in Source::Kind::Git
         tag = if @head
                 nil
@@ -186,11 +201,11 @@ module Carat
         end
         meta = ShardMeta.from_file(File.join(staged, "shard.yml"))
         if tag
-          {meta, staged, meta.version}
+          {meta, staged, meta.version, tag}
         else
           sha = Carat.git(["rev-parse", "HEAD"], staged).try(&.strip) ||
                 raise Error.new("git rev-parse failed in #{staged}")
-          {meta, staged, "#{meta.version}+git.commit.#{sha[0, 10]}"}
+          {meta, staged, "#{meta.version}+git.commit.#{sha[0, 10]}", nil}
         end
       end
     end

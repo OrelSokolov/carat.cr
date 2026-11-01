@@ -13,7 +13,7 @@ require "sysinfo"
 require "marcel_cr"
 
 module Carat
-  VERSION = "0.13.0"
+  VERSION = "0.13.1"
 
   class Error < Exception
   end
@@ -609,6 +609,25 @@ module Carat
         File.expand_path(flag, dir)
       else
         flag
+      end
+    end
+  end
+
+  # Рекурсивное копирование дерева без следования симлинкам: симлинки
+  # пересоздаются (FileUtils.cp_r следует за симлинками на каталоги —
+  # layout lib/<shard>/lib -> .., который делает shards для flat-резолва
+  # зависимостей, уводит его в бесконечную рекурсию).
+  def self.copy_tree(src : String, dst : String) : Nil
+    Dir.mkdir_p(dst)
+    Dir.each_child(src) do |entry|
+      s = File.join(src, entry)
+      d = File.join(dst, entry)
+      if File.symlink?(s)
+        File.symlink(File.readlink(s), d)
+      elsif File.directory?(s)
+        copy_tree(s, d)
+      else
+        FileUtils.cp(s, d)
       end
     end
   end
@@ -1431,7 +1450,7 @@ module Carat
       in Source::Kind::Local
         meta = ShardMeta.from_file(File.join(source.location, "shard.yml"))
         staged = File.join(Paths.tmp_dir, "#{meta.name}-#{Random::Secure.hex(4)}")
-        FileUtils.cp_r(source.location, staged)
+        Carat.copy_tree(source.location, staged)
         {meta, staged, meta.version}
       in Source::Kind::Git
         tag = @head ? nil : latest_tag(source.location)

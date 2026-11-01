@@ -12,7 +12,7 @@ require "colorize"
 require "sysinfo"
 
 module Carat
-  VERSION = "0.10.0"
+  VERSION = "0.11.0"
 
   class Error < Exception
   end
@@ -60,9 +60,12 @@ module Carat
     end
 
     class SystemShell < Shell
+      # stdin наследуется: git должен иметь возможность спросить учётные
+      # данные интерактивно (приватный репозиторий, https-токен, ssh-пароль).
       def run(command : String, args : Array(String), cwd : String?) : Bool
         Process.run(command, args,
           chdir: cwd,
+          input: Process::Redirect::Inherit,
           output: Process::Redirect::Inherit,
           error: Process::Redirect::Inherit).success?
       end
@@ -72,10 +75,12 @@ module Carat
       def run_command(command : String, cwd : String?) : Bool
         {% if flag?(:windows) %}
           Process.run("cmd", ["/c", command], chdir: cwd,
+            input: Process::Redirect::Inherit,
             output: Process::Redirect::Inherit,
             error: Process::Redirect::Inherit).success?
         {% else %}
           Process.run("sh", ["-c", command], chdir: cwd,
+            input: Process::Redirect::Inherit,
             output: Process::Redirect::Inherit,
             error: Process::Redirect::Inherit).success?
         {% end %}
@@ -465,11 +470,21 @@ module Carat
     end
   end
 
+  # Прямой git URL: схема https://host/... | ssh://user@host/... |
+  # git:// | file:// — либо scp-подобный синтаксис git (user@host:path,
+  # до двоеточия нет '/': git@github.com:owner/repo.git). Таким URL carat
+  # доверяет как есть — любой git-хост (GitLab, Gitea, sr.ht, ...).
+  GIT_URL     = /\A(?:https?|git|ssh|file):\/\//
+  GIT_SCP_URL = /\A[^\/\s]+@[^\/\s]+:/
+
   def self.resolve_source(src : String) : Source
     if File.directory?(src)
       Source.new(Source::Kind::Local, File.expand_path(src))
-    elsif src.starts_with?("git@") || (src =~ /\A(?:https?|git|ssh|file):\/\//)
-      name = src.chomp("/").split('/').last?.try &.gsub(/\.git\$/, "")
+    elsif src =~ GIT_URL || src =~ GIT_SCP_URL
+      # Имя-подсказка для staging-каталога: последний сегмент после '/'
+      # или ':' без финального .git (https://h/o/repo.git, git@h:o/repo.git,
+      # git@h:repo.git → repo).
+      name = src.chomp("/").split(/[:\/]/).last?.try &.gsub(/\.git\z/, "")
       Source.new(Source::Kind::Git, src, name)
     elsif src.count('/') == 1
       owner, repo = src.split('/', 2)
@@ -1001,7 +1016,13 @@ module Carat
         puts "Cloning #{source.location}..."
         unless Carat.shell.run("git", ["clone", "--quiet", "--depth", "1", source.location, staged], nil)
           FileUtils.rm_rf(staged) if Dir.exists?(staged)
-          raise Error.new("git clone failed: #{source.location}")
+          # git уже напечатал свою причину выше (вывод наследуется); сюда —
+          # подсказка про самый частый случай приватного репозитория.
+          # Авторизация делегирована git'у: ssh-ключи, credential helper
+          # или https-токен работают как в любом другом git clone.
+          raise Error.new("git clone failed: #{source.location}" \
+            " — for a private repository make sure git can authenticate" \
+            " (ssh key loaded, credential helper or https token)")
         end
         meta = ShardMeta.from_file(File.join(staged, "shard.yml"))
         {meta, staged}
@@ -1106,7 +1127,10 @@ module Carat
 
     Usage:
       carat install <src>   Global install: clone -> build -> binaries in ~/.carat/bin
-                            <src>: owner/repo | name | git URL | local directory
+                            <src>: owner/repo | name | git URL (https://, ssh://,
+                            git@host:path) | local directory
+                            Private repos work too: auth is delegated to git
+                            (ssh keys, credential helper, https token)
       carat install .       Global install of the shard in the current directory
                             (local shard development)
       carat install         In a project with shard.yml: shards install + build

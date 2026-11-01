@@ -66,6 +66,9 @@ the binary **is** the package. Libraries keep working the usual way —
 carat install owner/repo        # from GitHub: owner/repo shorthand
 carat install name              # bare name → github.com/<name>/<name>
 carat install https://github.com/owner/repo.git
+carat install git@gitlab.com:owner/repo.git   # any git host (GitLab, Gitea,
+                                              # sr.ht, ...), https or ssh
+carat install ssh://git@git.example.com/owner/repo.git
 carat install ~/code/my-tool    # local checkout
 carat install .                 # the shard in the current directory — global
                                  # install while developing it locally
@@ -73,6 +76,12 @@ carat install .                 # the shard in the current directory — global
 
 Sources are resolved in that order; the built binaries are the same in every
 case.
+
+**Private repositories** need no special carat options: authentication is
+delegated to `git` itself, exactly like a `shards` `git:` dependency — ssh
+keys, a credential helper or an https token all work. For an https repo where
+git would prompt for a username/token, carat passes the prompt through to
+your terminal.
 
 ## Commands
 

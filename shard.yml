@@ -1,5 +1,5 @@
 name: carat
-version: 0.11.0
+version: 0.12.0
 authors:
   - Oleg Sokolov
 description: Package manager for Crystal — RubyGems-style workflow for shard binaries
@@ -12,5 +12,8 @@ dependencies:
   sysinfo:
     github: OrelSokolov/sysinfo.cr
     version: ">= 1.1.0"
+  marcel_cr:
+    # appicon format detection by magic bytes (assets:appicon must be PNG/SVG)
+    github: OrelSokolov/marcel.cr
 binaries:
   - carat

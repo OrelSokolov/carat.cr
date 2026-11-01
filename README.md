@@ -24,6 +24,12 @@ keep working untouched (shards simply ignores the extra key).
 - **Project mode too** — `carat install` in a project delegates to
   `shards install` and builds binaries into `./.carat/bin`;
   `carat exec` runs them like `bundle exec`.
+- **Desktop apps** — give a binary `launchers: {menu: true, desktop: true}`
+  and add `assets:appicon:` (PNG/SVG), and carat ships it as a real GUI
+  app: application-menu entry and/or desktop shortcut per platform
+  (XDG `.desktop` / Start Menu `.lnk` / macOS `.app`), icon wrapped for
+  the platform — no conversion pipeline (see
+  [Desktop apps](#desktop-apps-launchers-and-assetsappicon)).
 - **Self-hosting** — carat installs and updates itself through carat.
 - **Shell autocompletion out of the box** — bash, fish and zsh: `carat exec
   <TAB>` completes your project binaries (see
@@ -205,6 +211,57 @@ examples:
 Example binaries land in a separate dir (`~/.carat/examples` /
 `./.carat/examples`), so they never pollute your PATH.
 
+### Desktop apps: `launchers:` and `assets:appicon:`
+
+A binary with a `launchers:` mapping is a desktop application, not just a
+CLI tool — carat gives it desktop presence beyond the PATH entry:
+
+```yaml
+assets:
+  appicon: assets/icon.png     # or .svg — the app icon, any path in the shard
+
+binaries:
+  myapp:
+    launchers:
+      menu: true               # application menu entry
+      desktop: true            # shortcut on the desktop (in addition)
+  helper: {}                   # regular CLI binary, business as usual
+```
+
+The three launcher flags:
+
+| Flag | Default | Meaning |
+| ---- | ------- | ------- |
+| `terminal` | `true` | The usual carat install: binary in `~/.carat/bin`, on PATH. `false` moves it off the PATH into its own app dir (`~/.carat/apps/myapp/bin/`) — for pure-GUI apps |
+| `menu` | `false` | Entry in the application menu: XDG `.desktop` on Linux, Start Menu shortcut on Windows, `.app` bundle in `~/Applications` on macOS |
+| `desktop` | `false` | Shortcut on the user's desktop, **in addition** to the menu entry — not instead of it |
+
+On install, icons land in `~/.carat/apps/myapp/icons/` and the native
+launchers are generated for the platform:
+
+| Platform | `menu` | `desktop` | Icon |
+| -------- | ------ | --------- | ---- |
+| Linux (any distro) | `~/.local/share/applications/myapp.desktop` | `~/Desktop/myapp.desktop` (XDG_DESKTOP_DIR) | PNG/SVG as-is |
+| Windows | Start Menu `.lnk` | Desktop `.lnk` | `.ico` built from the PNG |
+| macOS | `~/Applications/Myapp.app` | symlink on the Desktop | `.icns` built from the PNG |
+
+Two things keep this simple:
+
+- The icon format is verified by **magic bytes** (marcel.cr port) — PNG or
+  SVG only, a mislabeled file fails the install with a clear error.
+- **No conversion pipeline**: `.ico` and `.icns` are containers that
+  accept a PNG payload as-is (Vista+ / modern macOS), so carat wraps the
+  bytes itself; on Linux `.desktop` accepts PNG/SVG paths directly. SVG
+  sources work on Linux as-is; on Windows/macOS they need a rasterizer
+  carat doesn't ship — the shortcut is created without an icon.
+
+The application knows **nothing** about carat: its read-only assets (if
+any) live next to the binary in the app dir — the portable-app
+convention, resolved relative to the executable — and writable data
+belongs in the platform user dirs (`XDG_DATA_HOME`, `%APPDATA%`), not in
+carat's layout. Launchers reference absolute paths, so `carat update`
+regenerates them on every version change.
+
 ### Build flags from dependencies
 
 A shard's binaries often link C libraries through binding shards. A
@@ -264,6 +321,7 @@ keys, so the dependency stays a normal shard.
 ```
 ~/.carat/bin/                    global binaries (entry points only)
 ~/.carat/examples/               global example binaries (--with-examples)
+~/.carat/apps/<name>/            GUI apps (app:): binary + icons + manifest
 ~/.carat/shards/<name>/<ver>/    source store, per version
 ~/.carat/shards/<name>/current   installed version pointer
 ~/.carat/logs/carat.log          install/overwrite/update audit log

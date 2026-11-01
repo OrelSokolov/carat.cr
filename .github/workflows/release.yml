@@ -1,0 +1,50 @@
+# Release: prebuilt Linux binaries as GitHub release assets, named by the
+# carat convention {name}-{version}-{os}-{arch}.tar.gz — `carat install
+# OrelSokolov/carat.cr` (and `carat self`) then downloads the binary
+# instead of compiling. A {asset}.sha256 sidecar ships next to every
+# archive; carat verifies it before install.
+#
+# Linux only for now; macOS/Windows cells of the matrix can be added the
+# same way. ubuntu-22.04 keeps the glibc baseline low — glibc is
+# forward-compatible, so the binary runs on newer distros too.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # softprops/action-gh-release uploads release assets
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: crystal-lang/install-crystal@v1
+
+      - name: Install shards deps
+        run: shards install
+
+      - name: Build release binary
+        run: crystal build --release --no-color src/carat.cr -o carat
+
+      - name: Verify artifact (ELF magic bytes)
+        run: head -c 4 carat | od -An -tx1 | grep -q '7f 45 4c 46'
+
+      - name: Pack asset + sha256 sidecar
+        run: |
+          # version from shard.yml (not the v-prefixed tag) — canonical
+          # convention name, matched by carat's rule 1
+          version="$(grep -E '^version:' shard.yml | head -1 | awk '{print $2}')"
+          asset="carat-${version}-linux-x86_64.tar.gz"
+          tar czf "$asset" carat
+          sha256sum "$asset" > "${asset}.sha256"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            carat-*-linux-x86_64.tar.gz
+            carat-*-linux-x86_64.tar.gz.sha256

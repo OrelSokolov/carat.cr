@@ -13,7 +13,7 @@ require "sysinfo"
 require "marcel_cr"
 
 module Carat
-  VERSION = "0.12.0"
+  VERSION = "0.13.0"
 
   class Error < Exception
   end
@@ -140,6 +140,16 @@ module Carat
     puts paint(line, :yellow)
   end
 
+  # Захваченный stdout git-команды (в отличие от Shell#run, который всё
+  # наследует) — для резолва тегов/коммитов. stderr наследуется, чтобы
+  # причину ошибки (auth, сеть) пользователь видел сразу.
+  def self.git(args : Array(String), cwd : String? = nil) : String?
+    buf = IO::Memory.new
+    result = Process.run("git", args, chdir: cwd, output: buf,
+      error: Process::Redirect::Inherit)
+    result.success? ? buf.to_s : nil
+  end
+
   def self.env : Ports::Environment
     @@env ||= {% if flag?(:windows) %}Ports::WindowsEnvironment.new{% else %}Ports::PosixEnvironment.new{% end %}
   end
@@ -242,6 +252,11 @@ module Carat
     def self.parse(raw : String) : self
       s = raw.strip
       s = s[1..] if s.starts_with?('v')
+      # build-метаданные не влияют на порядок версий: identity вида
+      # 0.10.0+git.commit.<sha> (нотация shard.lock) сравнивается как 0.10.0
+      if plus = s.index('+')
+        s = s[0...plus]
+      end
       pre = nil
       if idx = s.index('-')
         pre = s[(idx + 1)..]
@@ -268,6 +283,14 @@ module Carat
     def to_s(io : IO) : Nil
       io << major << '.' << minor << '.' << patch
       io << '-' << pre if pre
+    end
+
+    # Похоже ли имя git-тега на версию — для выбора старшего semver-тега
+    # репозитория (резолв как у shards: последний релизный тег по умолчанию).
+    def self.parsable?(raw : String) : Bool
+      s = raw.strip
+      s = s[1..] if s.starts_with?('v')
+      !s.empty? && s.matches?(/\A\d+(\.\d+)*(-[0-9A-Za-z.-]+)?\z/)
     end
   end
 
@@ -1272,27 +1295,29 @@ module Carat
   class GlobalInstaller
     # release=false — dev-сборка (без --release);
     # only_shards=true — только клонирование и `shards install`, без сборки
-    # бинарников (`carat only install`).
+    # бинарников (`carat only install`);
+    # head=true — всегда HEAD дефолтной ветки (`carat install head <src>`),
+    # игнорируя релизные теги — свежий master, пускай экспериментальный.
     def initialize(@src : String, @with_examples : Bool = false, @system : Bool = false,
-                   @release : Bool = true, @only_shards : Bool = false)
+                   @release : Bool = true, @only_shards : Bool = false, @head : Bool = false)
     end
 
     def install : Nil
       source = Carat.resolve_source(@src)
       Paths.ensure_global_dirs
       bin_dir = target_bin_dir
-      meta, staged = stage(source)
+      meta, staged, identity = stage(source)
       previous = installed_version(meta.name)
-      store = promote(meta, staged)
+      store = promote(meta, staged, identity)
       Carat.install_dependencies(meta, store)
       build_all(meta, store, bin_dir)
-      File.write(Paths.current_pointer(meta.name), meta.version)
-      Carat.logger.log("install #{meta.name} #{meta.version} from #{source.location} to #{bin_dir} (previous: #{previous || "none"})")
+      File.write(Paths.current_pointer(meta.name), identity)
+      Carat.logger.log("install #{meta.name} #{identity} from #{source.location} to #{bin_dir} (previous: #{previous || "none"})")
       after_system_install(bin_dir)
       if @only_shards
-        puts "Installed shards of #{meta.name} #{meta.version} -> #{store}"
+        puts "Installed shards of #{meta.name} #{identity} -> #{store}"
       else
-        puts "Installed #{meta.name} #{meta.version} -> #{bin_dir}"
+        puts "Installed #{meta.name} #{identity} -> #{bin_dir}"
       end
     end
 
@@ -1300,34 +1325,39 @@ module Carat
       source = Carat.resolve_source(@src)
       Paths.ensure_global_dirs
       bin_dir = target_bin_dir
-      meta, staged = stage(source)
+      meta, staged, identity = stage(source)
       installed = installed_version(meta.name)
       unless installed
         FileUtils.rm_rf(staged)
         raise Error.new("#{meta.name} is not installed globally; run: carat install #{@src}")
       end
-      cmp = SemVer.parse(meta.version) <=> SemVer.parse(installed)
-      if cmp == 0
+      # Identity совпала — стоит ровно тот же тег/коммит, выходим. Дальше
+      # semver по базовой версии (build-метаданные +git.commit.<sha> в
+      # сравнении не участвуют): старший тег обновляет, младший — не
+      # даунгрейдит. Равная версия с другим identity — master уехал без
+      # bump'а version: обновляемся по изменившемуся коммиту.
+      if identity == installed
         FileUtils.rm_rf(staged)
         puts "#{meta.name} #{installed} is up to date"
         return
       end
+      cmp = SemVer.parse(meta.version) <=> SemVer.parse(installed)
       if cmp < 0
         FileUtils.rm_rf(staged)
-        puts "Remote #{meta.name} #{meta.version} is older than installed #{installed}; nothing to do"
+        puts "Remote #{meta.name} #{identity} is older than installed #{installed}; nothing to do"
         return
       end
-      puts "Updating #{meta.name} #{installed} -> #{meta.version}"
-      store = promote(meta, staged)
+      puts "Updating #{meta.name} #{installed} -> #{identity}"
+      store = promote(meta, staged, identity)
       Carat.install_dependencies(meta, store)
       build_all(meta, store, bin_dir)
-      File.write(Paths.current_pointer(meta.name), meta.version)
-      Carat.logger.log("update #{meta.name} #{installed} -> #{meta.version} from #{source.location}")
+      File.write(Paths.current_pointer(meta.name), identity)
+      Carat.logger.log("update #{meta.name} #{installed} -> #{identity} from #{source.location}")
       after_system_install(bin_dir)
       if @only_shards
-        puts "Updated shards of #{meta.name} #{meta.version} -> #{store}"
+        puts "Updated shards of #{meta.name} #{identity} -> #{store}"
       else
-        puts "Updated #{meta.name} #{meta.version} -> #{bin_dir}"
+        puts "Updated #{meta.name} #{identity} -> #{bin_dir}"
       end
     end
 
@@ -1388,18 +1418,30 @@ module Carat
       puts "Examples -> #{Paths.examples_dir}"
     end
 
-    private def stage(source : Source) : {ShardMeta, String}
+    # Клонирование в staging-каталог. Возвращает {meta, staged, identity}:
+    # identity — то, что устанавливаем и пишем в current-указатель. Для
+    # релизного тега это version из shard.yml (стабильно, как в shard.lock);
+    # для HEAD — version+git.commit.<sha> (нотация shard.lock для веточных
+    # зависимостей): разный коммит master'а = разный identity, и update видит
+    # движение ветки даже без bump'а version. По умолчанию резолв как у
+    # shards: старший semver-тег, HEAD дефолтной ветки — только если тегов
+    # нет; head-режим всегда берёт HEAD.
+    private def stage(source : Source) : {ShardMeta, String, String}
       case source.kind
       in Source::Kind::Local
         meta = ShardMeta.from_file(File.join(source.location, "shard.yml"))
         staged = File.join(Paths.tmp_dir, "#{meta.name}-#{Random::Secure.hex(4)}")
         FileUtils.cp_r(source.location, staged)
-        {meta, staged}
+        {meta, staged, meta.version}
       in Source::Kind::Git
+        tag = @head ? nil : latest_tag(source.location)
         hint = source.name || "shard"
         staged = File.join(Paths.tmp_dir, "#{hint}-#{Random::Secure.hex(4)}")
-        puts "Cloning #{source.location}..."
-        unless Carat.shell.run("git", ["clone", "--quiet", "--depth", "1", source.location, staged], nil)
+        puts "Cloning #{source.location} (#{tag || "default branch HEAD"})..."
+        clone_args = ["-c", "advice.detachedHead=false", "clone", "--quiet", "--depth", "1"]
+        clone_args.concat(["--branch", tag]) if tag
+        clone_args << source.location << staged
+        unless Carat.shell.run("git", clone_args, nil)
           FileUtils.rm_rf(staged) if Dir.exists?(staged)
           # git уже напечатал свою причину выше (вывод наследуется); сюда —
           # подсказка про самый частый случай приватного репозитория.
@@ -1410,13 +1452,38 @@ module Carat
                           " (ssh key loaded, credential helper or https token)")
         end
         meta = ShardMeta.from_file(File.join(staged, "shard.yml"))
-        {meta, staged}
+        if tag
+          {meta, staged, meta.version}
+        else
+          sha = Carat.git(["rev-parse", "HEAD"], staged).try(&.strip) ||
+                raise Error.new("git rev-parse failed in #{staged}")
+          {meta, staged, "#{meta.version}+git.commit.#{sha[0, 10]}"}
+        end
       end
     end
 
-    # Перенос staging-каталога в стор версий ~/.carat/shards/<name>/<ver>/
-    private def promote(meta : ShardMeta, staged : String) : String
-      store = Paths.shard_dir(meta.name, meta.version)
+    # Старший semver-тег репозитория (резолв как у shards: git-зависимость
+    # без версии — это последний релизный тег, а не HEAD ветки). Аннотиро-
+    # ванные теги идут двумя строками: ^{} (peeled) указывает на сам коммит
+    # и перебивает указатель тег-объекта. Нет подходящих тегов — nil,
+    # caller клонирует HEAD дефолтной ветки.
+    private def latest_tag(url : String) : String?
+      refs = Carat.git(["ls-remote", "--tags", url]) || return nil
+      tags = {} of String => String
+      refs.each_line do |line|
+        next unless match = line.match(/\A([0-9a-f]{40})\trefs\/tags\/([^^\s]+)(\^\{\})?\z/)
+        sha, name, peeled = match[1], match[2], match[3]?
+        next unless SemVer.parsable?(name)
+        if peeled || !tags.has_key?(name)
+          tags[name] = sha
+        end
+      end
+      tags.max_by? { |name, _| SemVer.parse(name) }.try(&.[0])
+    end
+
+    # Перенос staging-каталога в стор версий ~/.carat/shards/<name>/<identity>/
+    private def promote(meta : ShardMeta, staged : String, identity : String) : String
+      store = Paths.shard_dir(meta.name, identity)
       FileUtils.rm_rf(store) if Dir.exists?(store)
       Dir.mkdir_p(File.dirname(store))
       File.rename(staged, store)
@@ -1512,15 +1579,25 @@ module Carat
 
     Usage:
       carat install <src>   Global install: clone -> build -> binaries in ~/.carat/bin
+                            Resolves like shards: the latest release tag when
+                            the repo has tags, otherwise the default branch HEAD
                             <src>: owner/repo | name | git URL (https://, ssh://,
                             git@host:path) | local directory
                             Private repos work too: auth is delegated to git
                             (ssh keys, credential helper, https token)
+      carat install head <src>
+                            Always the default branch HEAD (fresh master,
+                            experimental): the install is pinned per commit
+                            (version+git.commit.<sha>), so `carat update head`
+                            follows every push, tagged or not
       carat install .       Global install of the shard in the current directory
                             (local shard development)
       carat install         In a project with shard.yml: shards install + build
                             binaries into ./.carat/bin
-      carat update <src>    Update globally installed shard if remote version is newer
+      carat update <src>    Update globally installed shard if remote identity
+                            is newer (tag: semver decides; head: any new commit)
+      carat update head <src>
+                            Re-resolve the default branch HEAD and rebuild
       carat update          In a project: delegates to shards update + rebuild
                             binaries into ./.carat/bin
       carat dev install     Like install, but builds without --release
@@ -1550,8 +1627,9 @@ module Carat
       ~/.carat/bin/                  global binaries (only entry points)
       ~/.carat/examples/             global example binaries (--with-examples)
       ~/.carat/apps/<name>/          GUI apps (app: binaries + icons)
-      ~/.carat/shards/<name>/<ver>/  global source store, per version
-      ~/.carat/shards/<name>/current installed version pointer
+      ~/.carat/shards/<name>/<identity>/  global source store, per installed version
+                            (tag: 1.2.3; HEAD: 1.2.3+git.commit.a1b2c3d4e5)
+      ~/.carat/shards/<name>/current installed identity pointer (see above)
       ~/.carat/logs/carat.log        install/overwrite/update audit log
       ./.carat/bin/                  project binaries
       ./.carat/examples/             project example binaries (--with-examples)
@@ -1576,12 +1654,14 @@ module Carat
   # Канонический репозиторий carat — источник для `carat self ...`.
   CARAT_SOURCE = "OrelSokolov/carat.cr"
 
-  # `carat self install` / `carat self update` — одно и то же:
-  # install-or-update самого carat из канонического репозитория. Если
-  # указатель версии уже есть (~/.carat/shards/carat/current) — путь update
-  # с semver-сравнением, иначе — полная установка.
+  # `carat self install` / `carat self update` — install-or-update самого carat
+  # из канонического репозитория. Если указатель версии уже есть
+  # (~/.carat/shards/carat/current) — путь update, иначе — полная установка.
+  # Репозиторий carat не тегируется под каждый релиз — self всегда идёт по
+  # HEAD master'а (head-режим): identity version+git.commit.<sha> меняется с
+  # каждым пушем, update видит движение и без bump'а version.
   def self.self_command(with_examples : Bool = false, system : Bool = false) : Nil
-    installer = GlobalInstaller.new(CARAT_SOURCE, with_examples, system)
+    installer = GlobalInstaller.new(CARAT_SOURCE, with_examples, system, head: true)
     if File.exists?(Paths.current_pointer("carat"))
       installer.update
     else
@@ -1617,8 +1697,9 @@ module Carat
       rest = argv[1..]
       with_examples = !rest.delete("--with-examples").nil?
       system = !rest.delete("--system").nil?
+      head = !rest.delete("head").nil?
       if src = rest[0]?
-        GlobalInstaller.new(src, with_examples, system, release, only_shards).install
+        GlobalInstaller.new(src, with_examples, system, release, only_shards, head).install
       else
         raise Error.new("--system is only valid for global installs (carat install <src>)") if system
         ProjectInstaller.new("install", with_examples, release, only_shards).run
@@ -1627,8 +1708,9 @@ module Carat
       rest = argv[1..]
       with_examples = !rest.delete("--with-examples").nil?
       system = !rest.delete("--system").nil?
+      head = !rest.delete("head").nil?
       if src = rest[0]?
-        GlobalInstaller.new(src, with_examples, system, release, only_shards).update
+        GlobalInstaller.new(src, with_examples, system, release, only_shards, head).update
       else
         raise Error.new("--system is only valid for global installs (carat update <src>)") if system
         ProjectInstaller.new("update", with_examples, release, only_shards).run
@@ -1697,13 +1779,13 @@ module Carat
     case typed.first?
     when nil       then COMMANDS + ["--help", "--version"]
     when "exec"    then typed.size == 1 ? exec_candidates : [] of String
-    when "install" then typed.size == 1 ? ["--with-examples", "--system"] : [] of String
-    when "update"  then installed_shards + ["--with-examples", "--system"]
+    when "install" then typed.size == 1 ? ["head", "--with-examples", "--system"] : [] of String
+    when "update"  then installed_shards + ["head", "--with-examples", "--system"]
     when "dev", "only", "shards"
       case typed[1]?
       when nil       then ["install", "update"]
-      when "install" then ["--with-examples", "--system"]
-      when "update"  then installed_shards + ["--with-examples", "--system"]
+      when "install" then ["head", "--with-examples", "--system"]
+      when "update"  then installed_shards + ["head", "--with-examples", "--system"]
       else                [] of String
       end
     when "completion" then ["install"]

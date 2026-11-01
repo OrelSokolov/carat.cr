@@ -93,10 +93,12 @@ your terminal.
 
 | Command                  | Behavior                                                            |
 | ------------------------ | ------------------------------------------------------------------- |
-| `carat install <src>`    | Global install: clone → release build → binaries in `~/.carat/bin`  |
+| `carat install <src>`    | Global install: clone → release build → binaries in `~/.carat/bin`. Resolves like shards: the latest release tag when the repo has tags, otherwise the default branch HEAD |
+| `carat install head <src>` | Always the default branch HEAD (fresh master, experimental): pinned per commit (`version+git.commit.<sha>`), so `carat update head` follows every push |
 | `carat install .`        | Global install of the shard in the current dir (local development)  |
 | `carat install`          | In a project: delegates to `shards install`, builds `binaries:` into `./.carat/bin` |
-| `carat update <src>`     | Compares the installed version with the remote; installs if newer  |
+| `carat update <src>`     | Update if the remote identity is newer (tag: semver decides; head: any new commit) |
+| `carat update head <src>` | Re-resolve the default branch HEAD and rebuild                     |
 | `carat update`          | In a project: delegates to `shards update`, rebuilds `./.carat/bin` |
 | `carat dev install`     | Like `install`, but builds with a plain `crystal build` (no `--release`): faster codegen for development iteration |
 | `carat dev update`      | Same for `update`                                                   |
@@ -183,8 +185,15 @@ instead of a mapping applies to every OS. Relative paths in `link_flags`
 are resolved against the shard root (mold/ld do not open relative
 `--link-flags` paths).
 
-Bump the version in shard.yml, push — every user's `carat update` picks it
-up. No releases page, no tarballs, no install scripts.
+Version resolution mirrors `shards`: a `carat install`/`carat update`
+picks the **latest release tag** of the repository (annotate your tags:
+`git tag v1.2.0 && git push --tags`); untagged repos ride the default
+branch HEAD. `carat install head <src>` / `carat update head <src>` always
+track fresh master — useful for experimental work-in-progress — with the
+install pinned per commit (`version+git.commit.<sha>`, the shard.lock
+notation), so updates follow every push even without a version bump.
+`carat self` tracks master this way (the canonical repo isn't tagged per
+release). No releases page, no tarballs, no install scripts.
 
 `shards` ignores the extra `binaries:` key, so the shard stays a perfectly
 normal shard — `shards install` / `shards build` keep working (verified
@@ -288,8 +297,10 @@ keys, so the dependency stays a normal shard.
 
 ## What happens on install
 
-1. **Fetch** — `git clone --depth 1` into a staging dir (local directories
-   are copied as-is).
+1. **Fetch** — the source is resolved like shards resolves a git dependency:
+   the latest release tag when the repo has one (cloned at that tag,
+   `--depth 1`), otherwise the default branch HEAD; local directories
+   are copied as-is.
 2. **Store** — sources are archived at `~/.carat/shards/<name>/<version>/`
    with a `current` version pointer, so installed versions are inspectable
    and switchable later.
@@ -322,7 +333,7 @@ keys, so the dependency stays a normal shard.
 ~/.carat/bin/                    global binaries (entry points only)
 ~/.carat/examples/               global example binaries (--with-examples)
 ~/.carat/apps/<name>/            GUI apps (app:): binary + icons + manifest
-~/.carat/shards/<name>/<ver>/    source store, per version
+~/.carat/shards/<name>/<identity>/ source store (tag: 1.2.3; HEAD: 1.2.3+git.commit.a1b2c3d4e5)
 ~/.carat/shards/<name>/current   installed version pointer
 ~/.carat/logs/carat.log          install/overwrite/update audit log
 ~/.carat/tmp/                    staging for clones

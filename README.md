@@ -4,10 +4,15 @@
 
 # Carat - Painless software distribution for Crystal shards
 
-Supports crossplatform install for:
-
-- console applications
-- gui applications with your logo
+> What you get:
+> 
+> - Painless install of any console application as usual package manager
+> - Automatic install of any GUI application with SystemMenu\Desktop launcher 
+> - Direct daemon deploy from git to your server `carat deploy author/repo user@11.11.11.11`
+>
+> What you pay:
+>
+> - nothing, it does not conflict with your standard shards.yml file, it extends it
 
 
 Extends `shard.yml` with a `binaries:` section — **fully compatible with

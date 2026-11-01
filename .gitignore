@@ -9,3 +9,6 @@
 
 # local carat state
 /.carat/
+
+# deploy test scaffolding (docker server, throwaway ssh keys)
+/.deploy-test/

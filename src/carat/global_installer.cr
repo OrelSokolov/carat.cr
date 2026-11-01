@@ -4,6 +4,66 @@
 
 module Carat
   # ------------------------------------------------------------------
+  # Ядро: теги и клонирование git-источника (GlobalInstaller и Deploy)
+  # ------------------------------------------------------------------
+
+  # Все semver-теги репозитория: {имя тега => коммит}. Аннотированные теги
+  # идут двумя строками: ^{} (peeled) указывает на сам коммит и перебивает
+  # указатель тег-объекта. Нет подходящих тегов — пустой хэш.
+  def self.remote_tags(url : String) : Hash(String, String)
+    refs = Carat.git(["ls-remote", "--tags", url]) || return {} of String => String
+    tags = {} of String => String
+    refs.each_line do |line|
+      next unless match = line.match(/\A([0-9a-f]{40})\trefs\/tags\/([^^\s]+)(\^\{\})?\z/)
+      sha, name, peeled = match[1], match[2], match[3]?
+      next unless SemVer.parsable?(name)
+      if peeled || !tags.has_key?(name)
+        tags[name] = sha
+      end
+    end
+    tags
+  end
+
+  # Старший semver-тег репозитория (резолв как у shards: git-зависимость
+  # без версии — это последний релизный тег, а не HEAD ветки). Нет подходящих
+  # тегов — nil, caller клонирует HEAD дефолтной ветки.
+  def self.latest_tag(url : String) : String?
+    remote_tags(url).max_by? { |name, _| SemVer.parse(name) }.try(&.[0])
+  end
+
+  # Клон git-источника в tmp-staging по релизному тегу (nil — HEAD дефолтной
+  # ветки): shallow-clone --depth 1. Возвращает {meta, staged, identity}:
+  # identity — version из shard.yml для тега (стабильно, как в shard.lock)
+  # или version+git.commit.<sha> для HEAD. Используют GlobalInstaller.stage
+  # и `carat deploy <src>`.
+  def self.clone_git(source : Source, tag : String?) : {ShardMeta, String, String}
+    hint = source.name || "shard"
+    staged = File.join(Paths.tmp_dir, "#{hint}-#{Random::Secure.hex(4)}")
+    puts "Cloning #{source.location} (#{tag || "default branch HEAD"})..."
+    clone_args = ["-c", "advice.detachedHead=false", "clone", "--quiet", "--depth", "1"]
+    clone_args.concat(["--branch", tag]) if tag
+    clone_args << source.location << staged
+    unless Carat.shell.run("git", clone_args, nil)
+      FileUtils.rm_rf(staged) if Dir.exists?(staged)
+      # git уже напечатал свою причину выше (вывод наследуется); сюда —
+      # подсказка про самый частый случай приватного репозитория.
+      # Авторизация делегирована git'у: ssh-ключи, credential helper
+      # или https-токен работают как в любом другом git clone.
+      raise Error.new("git clone failed: #{source.location}" \
+                      " — for a private repository make sure git can authenticate" \
+                      " (ssh key loaded, credential helper or https token)")
+    end
+    meta = ShardMeta.from_file(File.join(staged, "shard.yml"))
+    if tag
+      {meta, staged, meta.version}
+    else
+      sha = Carat.git(["rev-parse", "HEAD"], staged).try(&.strip) ||
+            raise Error.new("git rev-parse failed in #{staged}")
+      {meta, staged, "#{meta.version}+git.commit.#{sha[0, 10]}"}
+    end
+  end
+
+  # ------------------------------------------------------------------
   # Глобальная установка
   # ------------------------------------------------------------------
 
@@ -181,58 +241,13 @@ module Carat
               elsif v = @version
                 resolve_tag(source.location, v)
               else
-                latest_tag(source.location)
+                Carat.latest_tag(source.location)
               end
-        hint = source.name || "shard"
-        staged = File.join(Paths.tmp_dir, "#{hint}-#{Random::Secure.hex(4)}")
-        puts "Cloning #{source.location} (#{tag || "default branch HEAD"})..."
-        clone_args = ["-c", "advice.detachedHead=false", "clone", "--quiet", "--depth", "1"]
-        clone_args.concat(["--branch", tag]) if tag
-        clone_args << source.location << staged
-        unless Carat.shell.run("git", clone_args, nil)
-          FileUtils.rm_rf(staged) if Dir.exists?(staged)
-          # git уже напечатал свою причину выше (вывод наследуется); сюда —
-          # подсказка про самый частый случай приватного репозитория.
-          # Авторизация делегирована git'у: ssh-ключи, credential helper
-          # или https-токен работают как в любом другом git clone.
-          raise Error.new("git clone failed: #{source.location}" \
-                          " — for a private repository make sure git can authenticate" \
-                          " (ssh key loaded, credential helper or https token)")
-        end
-        meta = ShardMeta.from_file(File.join(staged, "shard.yml"))
-        if tag
-          {meta, staged, meta.version, tag}
-        else
-          sha = Carat.git(["rev-parse", "HEAD"], staged).try(&.strip) ||
-                raise Error.new("git rev-parse failed in #{staged}")
-          {meta, staged, "#{meta.version}+git.commit.#{sha[0, 10]}", nil}
-        end
+        meta, staged, identity = Carat.clone_git(source, tag)
+        {meta, staged, identity, tag}
       end
     end
 
-    # Все semver-теги репозитория: {имя тега => коммит}. Аннотированные теги
-    # идут двумя строками: ^{} (peeled) указывает на сам коммит и перебивает
-    # указатель тег-объекта. Нет подходящих тегов — пустый хэш.
-    private def remote_tags(url : String) : Hash(String, String)
-      refs = Carat.git(["ls-remote", "--tags", url]) || return {} of String => String
-      tags = {} of String => String
-      refs.each_line do |line|
-        next unless match = line.match(/\A([0-9a-f]{40})\trefs\/tags\/([^^\s]+)(\^\{\})?\z/)
-        sha, name, peeled = match[1], match[2], match[3]?
-        next unless SemVer.parsable?(name)
-        if peeled || !tags.has_key?(name)
-          tags[name] = sha
-        end
-      end
-      tags
-    end
-
-    # Старший semver-тег репозитория (резолв как у shards: git-зависимость
-    # без версии — это последний релизный тег, а не HEAD ветки). Нет подходящих
-    # тегов — nil, caller клонирует HEAD дефолтной ветки.
-    private def latest_tag(url : String) : String?
-      remote_tags(url).max_by? { |name, _| SemVer.parse(name) }.try(&.[0])
-    end
 
     # Тег с точной версией для `--version` (как `gem install --version`):
     # имя тега нормализуется через SemVer (v-префикс, build-метаданные), то
@@ -243,7 +258,7 @@ module Carat
         raise Error.new("invalid --version: #{version} (expected e.g. 1.1.0)")
       end
       wanted = SemVer.parse(version)
-      tags = remote_tags(url)
+      tags = Carat.remote_tags(url)
       match = tags.keys.find { |name| SemVer.parse(name) == wanted }
       return match if match
       available = tags.keys.sort_by { |name| SemVer.parse(name) }.reverse.join(", ")

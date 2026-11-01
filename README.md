@@ -38,6 +38,12 @@ keep working untouched (shards simply ignores the extra key).
   (XDG `.desktop` / Start Menu `.lnk` / macOS `.app`), icon wrapped for
   the platform — no conversion pipeline (see
   [Desktop apps](#desktop-apps-launchers-and-assetsappicon)).
+- **Deploy daemons to a server** — give a binary a `daemon:` mapping and
+  run `carat deploy user@ip`: local build, scp, capistrano-style versioned
+  releases (`releases/` + `current` symlink) and a systemd unit, activated
+  with an atomic switch + `systemctl restart` — one command, the server
+  needs only ssh and systemd (see
+  [Deploy: daemons on a server](#deploy-daemons-on-a-server)).
 - **Self-hosting** — carat installs and updates itself through carat.
 - **Shell autocompletion out of the box** — bash, fish and zsh: `carat exec
   <TAB>` completes your project binaries (see
@@ -118,6 +124,10 @@ your terminal.
 | `carat shards install`  | Synonym of `carat only install`                                     |
 | `carat shards update`   | Synonym of `carat only update`                                      |
 | `carat exec <cmd> [args]`| Like `bundle exec`: runs `<cmd>` with `./.carat/bin` prepended to PATH |
+| `carat deploy [src] [target]` | Build and deploy a daemon shard to a Linux server over ssh: versioned releases + `current` symlink + systemd units for `daemon:` binaries. `src`: the current directory (default), a local directory or a git source (`owner/repo` \| git URL) resolved like install — no checkout needed. Target: `user@host[:port]` or a server name from `deploy.yml` of the deployed shard; without a target — the single server defined there. Needs root or passwordless sudo on the server — fails fast, before the build |
+| `carat deploy rollback [target]` | Point `current` at the previous release and restart the services |
+| `carat logs [target]` | Last 200 `journalctl` lines of each deployed service |
+| `carat status [target]` | `systemctl status` of the deployed services + the current release |
 | `carat self install`     | Install-or-update carat itself from the canonical repo (`OrelSokolov/carat.cr`); `carat self update` is the same thing |
 | `carat completion install` | Install shell autocompletion (bash / fish / zsh)                       |
 
@@ -303,6 +313,92 @@ convention, resolved relative to the executable — and writable data
 belongs in the platform user dirs (`XDG_DATA_HOME`, `%APPDATA%`), not in
 carat's layout. Launchers reference absolute paths, so `carat update`
 regenerates them on every version change.
+
+### Deploy: daemons on a server
+
+A binary with a `daemon:` mapping is a system service, not a CLI tool —
+`carat deploy` ships it to a Linux server in one command: build locally,
+scp, capistrano-style versioned releases and a systemd unit. The server
+needs only ssh and systemd — no crystal, no git, no toolchain.
+
+```yaml
+# shard.yml — daemon: is a property of the binary, like launchers:
+binaries:
+  myapp:
+    daemon:
+      args: [--config, app.toml]   # ExecStart arguments (string split on
+                                   # whitespace / list of verbatim tokens)
+      description: My service      # Description= of the unit
+      restart: on-failure          # Restart= of the unit
+```
+
+Servers are named in `deploy.yml` next to `shard.yml` — only for named
+targets; `carat deploy user@ip` works without any file:
+
+```yaml
+# deploy.yml
+servers:
+  production:
+    host: 203.0.113.10       # ip or domain
+    user: deploy             # default root
+    port: 22                 # default 22
+    path: /opt/myapp         # default /opt/<shard-name>
+```
+
+`user@host` is not a secret (authentication is ssh keys, like a git
+remote) — Capistrano commits `config/deploy/*.rb` the same way.
+
+```bash
+carat deploy production     # = carat deploy deploy@203.0.113.10
+carat deploy root@1.2.3.4:2222
+carat deploy OrelSokolov/echo-server.cr user@ip   # git source, no checkout
+carat deploy /path/to/checkout user@ip            # local directory
+carat deploy rollback      # current -> previous release + restart
+carat logs production      # journalctl tail of every deployed service
+carat status production    # systemctl status + current release
+```
+
+The `src` is resolved like `carat install` (owner/repo | git URL |
+local directory): the latest release tag, otherwise the branch HEAD,
+shallow-cloned — the clone is disposed of after the deploy. The release
+identity follows the resolution: a tag deploys as `1.3.0`, HEAD as
+`0.1.0+git.commit.a1b2c3d4e5`. Named servers are looked up in the
+deploy.yml **of the deployed shard**, so a repository can carry its own
+deployment targets.
+
+What happens on `carat deploy`:
+
+1. **Fail fast** — ssh connectivity and write rights (`root` or
+   passwordless `sudo -n`) are checked *before* the local build, like
+   `--system` does.
+2. **Build locally** — every `binaries:` entry, with the normal carat
+   machinery (flags, prebuild, dependency shards). Only Linux ELF
+   binaries are accepted: there is no cross-compilation, deploy from a
+   Linux host of the server's architecture.
+3. **Release** — binaries land in `<path>/releases/<identity>/`
+   (identity = shard version + git commit, the shard.lock notation);
+   scp goes to `/tmp` first when the login user is not root.
+4. **Unit** — one systemd unit per `daemon:` binary,
+   `ExecStart=<path>/current/<name>`: the unit references the `current`
+   symlink, so an update never rewrites it. The unit is re-uploaded
+   only when its content changed.
+5. **Activate** — atomic symlink switch (`ln` + `mv -T`), `systemctl
+   enable`, `systemctl restart`, then `is-active` verification with a
+   journal tail right in the output if the service failed to start.
+   The last 5 releases are kept (rollback material).
+
+```
+/opt/myapp/
+  releases/
+    1.2.0+git.commit.a1b2c3d4e5/
+    1.3.0/
+  current -> releases/1.3.0
+```
+
+Non-goals, deliberately: ports/firewall (the server owns them), nginx,
+asset trees, multi-host, zero-downtime — this is a parachute drop for a
+self-contained binary, not a deploy platform. `daemon:` binaries in a
+plain `carat install` are just regular binaries (the key is ignored).
 
 ### Build flags from dependencies
 

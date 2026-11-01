@@ -1,6 +1,6 @@
 # shard.yml: имя, версия, секции binaries:/examples: (list/mapping,
 # зарезервированные all:/each:), launchers: desktop-интеграции,
-# assets:appicon, наличие dependencies:.
+# daemon: контракт деплоя, assets:appicon, наличие dependencies:.
 
 module Carat
   # ------------------------------------------------------------------
@@ -51,6 +51,26 @@ module Carat
       end
     end
 
+    # `daemon:` бинарника — контракт деплоя (carat deploy): бинарник не CLI
+    # и не GUI-приложение, а системный сервис. Как и launchers:, это свойство
+    # самого бинарника; окружение деплоя (серверы) живёт отдельно — deploy.yml.
+    #   daemon:
+    #     args: [--config, app.toml]  # аргументы ExecStart (строка по
+    #                                  # пробелам / список по токену — как
+    #                                  # launchers:args)
+    #     description: My service    # Description= юнита (дефолт: имя)
+    #     restart: on-failure        # Restart= юнита
+    # Короткая форма `daemon: true` — все значения по умолчанию.
+    struct DaemonSpec
+      getter args : Array(String)
+      getter description : String?
+      getter restart : String
+
+      def initialize(@args : Array(String) = [] of String, @description : String? = nil,
+                     @restart : String = "on-failure")
+      end
+    end
+
     class BinarySpec
       getter name : String
       getter main : String
@@ -58,10 +78,12 @@ module Carat
       getter flags : YAML::Any?
       getter link_flags : YAML::Any?
       getter launchers : Launchers
+      getter daemon : DaemonSpec?
 
       def initialize(@name : String, @main : String, @prebuild : String?,
                      @flags : YAML::Any?, @link_flags : YAML::Any?,
-                     @launchers : Launchers = Launchers.new)
+                     @launchers : Launchers = Launchers.new,
+                     @daemon : DaemonSpec? = nil)
       end
     end
 
@@ -170,7 +192,7 @@ module Carat
             end
             specs << BinarySpec.new(name.as_s, main, prebuild,
               spec["flags"]? || e_flags || a_flags, spec["link_flags"]? || e_link || a_link,
-              launchers)
+              launchers, parse_daemon(spec))
           end
         end
       end
@@ -181,6 +203,24 @@ module Carat
     private def self.launcher_flag(node : Hash(YAML::Any, YAML::Any), key : String, default : Bool) : Bool
       b = node[key]?.try(&.as_bool?)
       b.nil? ? default : b
+    end
+
+    # `daemon:` бинарника: bool (все дефолты) или mapping с args/description/
+    # restart; args парсятся как launchers:args. Отсутствует/не-bool-не-map —
+    # nil (обычный бинарник).
+    private def self.parse_daemon(spec : YAML::Any) : DaemonSpec?
+      node = spec["daemon"]?
+      return nil if node.nil?
+      case node.raw
+      when Bool then DaemonSpec.new
+      when Hash
+        h = node.as_h
+        DaemonSpec.new(
+          args: launcher_args(h),
+          description: h["description"]?.try(&.as_s?),
+          restart: h["restart"]?.try(&.as_s?) || "on-failure")
+      else nil
+      end
     end
 
     # launchers:args — строка (делится по пробелам) или список строк (по

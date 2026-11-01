@@ -71,6 +71,27 @@ module Carat
       carat only update     Same for update (shards update only)
                             (`shards` is a synonym of `only`: carat shards install)
       carat exec <cmd> ...  Run <cmd> with ./.carat/bin prepended to PATH
+      carat deploy [src] [target]
+                            Build and deploy a daemon shard to a Linux
+                            server over ssh, capistrano-style: versioned
+                            releases + current symlink + systemd units
+                            (needs `daemon:` in binaries:). <src>: local
+                            directory, owner/repo or git URL — resolved
+                            like install (latest release tag, else branch
+                            HEAD; shallow-cloned, clone disposed after);
+                            default — the shard in the current directory.
+                            Target: user@host[:port] or a server name from
+                            deploy.yml (of the deployed shard); without a
+                            target — the single server defined there.
+                            Needs root or passwordless sudo on the server —
+                            fails fast, before the local build
+      carat deploy rollback [target]
+                            Point `current` at the previous release and
+                            restart the services
+      carat logs [target]   Last 200 journalctl lines of each deployed
+                            service (journalctl -u <name>)
+      carat status [target] systemctl status of the deployed services +
+                            the current release
       carat completion install
                             Shell autocompletion (bash/fish; zsh hint)
       carat self install   Install-or-update carat itself from the canonical
@@ -128,10 +149,34 @@ module Carat
       bytes); no conversion pipeline is needed — .ico/.icns wrap the PNG
       as a container. The app itself knows nothing about carat: its assets
       live next to the binary (portable-app convention).
+
+    Deploy (daemons on a Linux server):
+      A binary with a `daemon:` mapping is a system service — `carat
+      deploy user@ip` ships it to a server in one command: local build,
+      scp, capistrano-style versioned releases (releases/<identity>/ +
+      current symlink) and a systemd unit pointing at current/<name>.
+      The server needs only ssh and systemd. The src may be the current
+      directory (default), a local directory or a git source
+      (owner/repo | git URL) resolved like install — no checkout needed:
+        carat deploy OrelSokolov/echo-server.cr user@ip
+      Servers can be named in deploy.yml next to shard.yml:
+        servers:
+          production:
+            host: 203.0.113.10
+            user: deploy        # default root
+            port: 22            # default 22
+            path: /opt/myapp    # default /opt/<shard-name>
+      user@host is not a secret (auth is ssh keys, like a git remote) —
+      Capistrano commits config/deploy/*.rb the same way. Deploy needs
+      root or passwordless sudo (checked before the build); updates are
+      an atomic symlink switch + systemctl restart, verified with
+      is-active (journal tail on failure). `carat deploy rollback`
+      switches to the previous release. No cross-compilation: deploy
+      from a Linux host of the server's architecture.
   TEXT
 
   # Подкоманды для автокомплита; "__complete" скрытая — не показывается.
-  COMMANDS = ["install", "update", "user", "system", "dev", "only", "shards", "exec", "completion", "self"]
+  COMMANDS = ["install", "update", "user", "system", "dev", "only", "shards", "exec", "deploy", "logs", "status", "completion", "self"]
 
   # Канонический репозиторий carat — источник для `carat self ...`.
   CARAT_SOURCE = "OrelSokolov/carat.cr"
@@ -230,6 +275,21 @@ module Carat
       raise Error.new("usage: carat exec <cmd> [args]") unless cmd
       args = argv.size > 2 ? argv[2..] : [] of String
       exec_command(cmd, args)
+    when "deploy"
+      rest = argv[1..]
+      if rest[0]? == "rollback"
+        raise Error.new("usage: carat deploy rollback [target]") if rest.size > 2
+        Deploy.new(nil, rest[1]?).rollback
+      else
+        raise Error.new("usage: carat deploy [src] [target]") if rest.size > 2
+        src, target = deploy_args(rest)
+        Deploy.new(src, target).deploy
+      end
+    when "logs", "status"
+      rest = argv[1..]
+      raise Error.new("usage: carat #{command} [target]") if rest.size > 1
+      deploy = Deploy.new(nil, rest[0]?)
+      command == "logs" ? deploy.logs : deploy.status
     when "completion"
       case argv[1]?
       when "install"
@@ -304,6 +364,13 @@ module Carat
       when "update"  then installed_shards + ["head", "--with-examples", "--system", "--build"]
       else                [] of String
       end
+    when "deploy"
+      case typed[1]?
+      when nil       then ["rollback"] + deploy_servers
+      when "rollback" then deploy_servers
+      else                [] of String
+      end
+    when "logs", "status" then deploy_servers
     when "completion" then ["install"]
     when "self"       then ["install", "update"]
     else                   [] of String
@@ -330,6 +397,27 @@ module Carat
     dir = Paths.shards_dir
     return [] of String unless Dir.exists?(dir)
     Dir.children(dir).sort.select { |name| File.exists?(Paths.current_pointer(name)) }
+  end
+
+  # carat deploy|logs|status <TAB>: именованные серверы из deploy.yml
+  # текущего каталога (битый yaml — просто без кандидатов).
+  private def self.deploy_servers : Array(String)
+    Deploy.servers.keys
+  rescue Carat::Error
+    [] of String
+  end
+
+  # carat deploy [src] [target]: один аргумент — это target (user@host или
+  # именованный сервер из ./deploy.yml), если похож на него; иначе — источник
+  # (тогда target — единственный сервер из deploy.yml самого источника).
+  private def self.deploy_args(rest : Array(String)) : {String?, String?}
+    return {nil, nil} if rest.empty?
+    if rest.size == 1
+      arg = rest[0]
+      arg.includes?('@') || deploy_servers.includes?(arg) ? {nil, arg} : {arg, nil}
+    else
+      {rest[0], rest[1]}
+    end
   end
 
   # `complete -C carat carat` into the XDG bash-completion dir — no rc

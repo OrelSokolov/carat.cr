@@ -30,8 +30,15 @@ module Carat
   @@logger : Ports::Logger? = nil
 
   def self.executable_file?(path : String) : Bool
-    # любой execute-бит (0o111)
-    !!File.info?(path).try { |info| (info.permissions.value & 0o111) != 0 }
+    {% if flag?(:windows) %}
+      # на Windows execute-бита нет: File.info всегда отдаёт 0o666/0o444,
+      # исполнимость решает расширение (File::Info.executable? смотрит
+      # PATHEXT, как это делает CreateProcess)
+      File::Info.executable?(path)
+    {% else %}
+      # любой execute-бит (0o111)
+      !!File.info?(path).try { |info| (info.permissions.value & 0o111) != 0 }
+    {% end %}
   end
 
   # Цвета только для интерактивного вывода: NO_COLOR и редирект в пайп

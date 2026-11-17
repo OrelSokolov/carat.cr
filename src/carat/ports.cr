@@ -75,13 +75,31 @@ module Carat
         return command if command.includes?(File::SEPARATOR) && Carat.executable_file?(command)
         path = ENV["PATH"]?
         return nil unless path
+        # Windows: bare commands resolve by appending PATHEXT extensions
+        # (shards -> shards.exe), the way where/CreateProcess do it.
+        names = pathext_names(command)
         path.split(Carat.env.path_separator).each do |dir|
           next if dir.empty?
-          candidate = File.join(dir, command)
-          return candidate if Carat.executable_file?(candidate)
+          names.each do |name|
+            candidate = File.join(dir, name)
+            return candidate if Carat.executable_file?(candidate)
+          end
         end
         nil
       end
+
+      {% if flag?(:windows) %}
+        # Candidate file names for a bare command on Windows: PATHEXT
+        # extensions appended (shards -> shards.exe), like where/CreateProcess.
+        private def pathext_names(command : String) : Array(String)
+          return [command] of String if command.includes?('.')
+          (ENV["PATHEXT"]? || ".COM;.EXE;.BAT;.CMD").split(';').map { |ext| command + ext }
+        end
+      {% else %}
+        private def pathext_names(command : String) : Array(String)
+          [command] of String
+        end
+      {% end %}
     end
 
     abstract class Logger

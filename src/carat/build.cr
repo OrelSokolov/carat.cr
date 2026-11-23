@@ -50,6 +50,24 @@ module Carat
     {flags, link_flags}
   end
 
+  # prebuild: строка ИЛИ per-OS селектор с теми же правилами, что у
+  # flags:/link_flags: (точный os, алиас macos для darwin, потом "*";
+  # первое совпадение). Зачем: пребилд — нативный шаг, и он часто разный
+  # по ОС: unix-хост запускает shell-команду, Windows-хост без bash —
+  # нативный .bat, и всё это живёт в одном shard.yml.
+  def self.select_prebuild(node : YAML::Any?, os : String = os_family) : String?
+    return nil if node.nil?
+    case node.raw
+    when String then node.as_s?
+    when Hash
+      selected = node[os]?
+      selected = node["macos"]? if selected.nil? && os == "darwin"
+      selected = node["*"]? if selected.nil?
+      selected.try(&.as_s?)
+    else nil
+    end
+  end
+
   # ------------------------------------------------------------------
   # Ядро: валидация артефактов по magic bytes
   # ------------------------------------------------------------------
@@ -200,10 +218,12 @@ module Carat
       puts "Dep flags (lib/, uniq): flags=#{dep_flags.uniq.inspect} link_flags=#{uniq_link_flags(dep_link_flags).inspect}"
     end
     # `all: prebuild:` — общий шаг секции, один раз до сборки бинарников.
-    if all_prebuild = section.all.try &.prebuild
-      puts "Prebuild (all): #{all_prebuild}"
-      unless shell.run_command(all_prebuild, dir)
-        raise Error.new("prebuild failed: #{all_prebuild}")
+    if all_node = section.all.try &.prebuild
+      if all_prebuild = select_prebuild(all_node, os)
+        puts "Prebuild (all): #{all_prebuild}"
+        unless shell.run_command(all_prebuild, dir)
+          raise Error.new("prebuild failed: #{all_prebuild}")
+        end
       end
     end
     specs = section.specs
@@ -218,7 +238,7 @@ module Carat
     # это нативные шаги (rake/make) с инкрементальным состоянием, не
     # безопасным под конкурентным запуском.
     specs.each do |bin|
-      if prebuild = bin.prebuild
+      if prebuild = select_prebuild(bin.prebuild, os)
         puts "Prebuild (#{bin.name}): #{prebuild}"
         unless shell.run_command(prebuild, dir)
           raise Error.new("prebuild failed for #{bin.name}: #{prebuild}")

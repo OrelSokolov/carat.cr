@@ -183,6 +183,18 @@ binaries:
       windows: [/LIBPATH:lib]
 ```
 
+`prebuild:` is either a plain command string or the same per-OS selector
+mapping as `flags:`/`link_flags:` — useful when the native step is OS-bound
+(unix shells out to bash, Windows runs a native `.bat`):
+
+```yaml
+binaries:
+  tool:
+    prebuild:
+      windows: scripts\build_native.bat   # no bash required on Windows
+      "*": bash scripts/build_native.sh   # linux and darwin
+```
+
 ### Shared keys: `all:` and `each:`
 
 In the mapping form two reserved keys control the whole section — no need
@@ -217,9 +229,10 @@ dependency resolution.
 
 Selector resolution follows crosspack's `hosts:` rules: exact OS family
 (`linux` / `darwin` / `windows`), then `*` — first hit wins. A plain list
-instead of a mapping applies to every OS. Relative paths in `link_flags`
-are resolved against the shard root (mold/ld do not open relative
-`--link-flags` paths).
+instead of a mapping applies to every OS. The same holds for `prebuild:`:
+a plain string runs on every OS, a mapping selects by OS. Relative paths
+in `link_flags` are resolved against the shard root (mold/ld do not open
+relative `--link-flags` paths).
 
 Version resolution mirrors `shards`: a `carat install`/`carat update`
 picks the **latest release tag** of the repository (annotate your tags:

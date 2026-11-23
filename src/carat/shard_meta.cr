@@ -13,7 +13,8 @@ module Carat
     #   binaries:
     #     tool:
     #       main: src/tool.cr          # default: src/<name>.cr
-    #       prebuild: rake build:native # command in the shard root
+    #       prebuild: rake build:native # command in the shard root (string or
+    #                                   # per-OS selector, see select_prebuild)
     #       flags:                      # crystal build flags
     #         "*": [--something]
     #         darwin: [-DSOME=1]
@@ -74,13 +75,15 @@ module Carat
     class BinarySpec
       getter name : String
       getter main : String
-      getter prebuild : String?
+      # Строка или per-OS селектор (linux/darwin|macos/windows/"*") —
+      # выбирается на этапе сборки через Carat.select_prebuild.
+      getter prebuild : YAML::Any?
       getter flags : YAML::Any?
       getter link_flags : YAML::Any?
       getter launchers : Launchers
       getter daemon : DaemonSpec?
 
-      def initialize(@name : String, @main : String, @prebuild : String?,
+      def initialize(@name : String, @main : String, @prebuild : YAML::Any?,
                      @flags : YAML::Any?, @link_flags : YAML::Any?,
                      @launchers : Launchers = Launchers.new,
                      @daemon : DaemonSpec? = nil)
@@ -179,7 +182,7 @@ module Carat
               e_pb, e_flags || a_flags, e_link || a_link)
           when Hash
             main = spec["main"]?.try(&.as_s?) || File.join("src", "#{name}.cr")
-            prebuild = spec["prebuild"]?.try(&.as_s?) || e_pb
+            prebuild = spec["prebuild"]? || e_pb
             # `launchers:` — desktop-интеграция: terminal (дефолт true),
             # menu, desktop (дефолт false), args — см. Launchers
             launchers = Launchers.new
@@ -247,7 +250,7 @@ module Carat
       spec = raw.as_h?
       return nil unless spec
       BinarySpec.new(key, "",
-        spec["prebuild"]?.try &.as_s?,
+        spec["prebuild"]?,
         spec["flags"]?, spec["link_flags"]?)
     end
   end

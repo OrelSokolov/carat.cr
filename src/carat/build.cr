@@ -96,6 +96,39 @@ module Carat
     end
   end
 
+  # Uniq по группам «флаг + значения», а не по отдельным токенам: пара
+  # "-framework CoreAudio" — единая единица, поэлементный uniq выкинул бы
+  # повторный токен "-framework" и clang принял бы имя фреймворка за входной
+  # файл ("no such file or directory: 'AudioToolbox'"). Позиционный токен
+  # (без ведущего "-") — самостоятельная группа (архивы/.lib дедуплицируются
+  # поодиночке, как и раньше). Ключ дедупликации — вся группа целиком,
+  # порядок сохраняется.
+  def self.uniq_link_flags(flags : Array(String)) : Array(String)
+    seen = Set(String).new
+    result = [] of String
+    i = 0
+    while i < flags.size
+      if flags[i].starts_with?('-')
+        # Флаг glue'ит следующие за ним значения (токены без "-").
+        group = [flags[i]]
+        i += 1
+        while i < flags.size && !flags[i].starts_with?('-')
+          group << flags[i]
+          i += 1
+        end
+      else
+        group = [flags[i]]
+        i += 1
+      end
+      key = group.join(' ')
+      unless seen.includes?(key)
+        seen << key
+        result.concat(group)
+      end
+    end
+    result
+  end
+
 
   # Проверка записываемости каталога ДО клонирования и release-сборки:
   # probe-файл создаётся и удаляется. На Unix прикладная ошибка — EACCES
@@ -164,7 +197,7 @@ module Carat
     os = os_family
     dep_flags, dep_link_flags = collect_dep_flags(dir, os)
     unless dep_flags.empty? && dep_link_flags.empty?
-      puts "Dep flags (lib/, uniq): flags=#{dep_flags.uniq.inspect} link_flags=#{dep_link_flags.uniq.inspect}"
+      puts "Dep flags (lib/, uniq): flags=#{dep_flags.uniq.inspect} link_flags=#{uniq_link_flags(dep_link_flags).inspect}"
     end
     # `all: prebuild:` — общий шаг секции, один раз до сборки бинарников.
     if all_prebuild = section.all.try &.prebuild
@@ -220,7 +253,7 @@ module Carat
     # Свои флаги бинарника + флаги зависимостей, uniq с сохранением порядка
     # (свои первыми — селекторы зависимостей их не перекрывают).
     flags = (select_flag_list(bin.flags, os) + dep_flags).uniq
-    link_flags = absolutize_link_flags((select_flag_list(bin.link_flags, os) + dep_link_flags).uniq, dir)
+    link_flags = absolutize_link_flags(uniq_link_flags(select_flag_list(bin.link_flags, os) + dep_link_flags), dir)
     args = ["build", "--no-color"]
     args << "--release" if release
     args += flags

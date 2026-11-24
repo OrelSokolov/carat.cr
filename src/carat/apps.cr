@@ -58,7 +58,7 @@ module Carat
     private def self.install_one(meta : ShardMeta, spec : ShardMeta::BinarySpec,
                                  icon : {String, String}?, bin_dir : String) : Nil
       name = spec.name
-      src_bin = File.join(bin_dir, name)
+      src_bin = File.join(bin_dir, Carat.bin_artifact_name(name))
       raise Error.new("#{meta.name}: app binary #{name} not found in #{bin_dir}") unless File.exists?(src_bin)
       l = spec.launchers
       unless icon
@@ -76,7 +76,7 @@ module Carat
       app_bin = src_bin
       unless l.terminal?
         Dir.mkdir_p(File.join(app_dir, "bin"))
-        app_bin = File.join(app_dir, "bin", name)
+        app_bin = File.join(app_dir, "bin", Carat.bin_artifact_name(name))
         move_binary(src_bin, app_bin)
       end
 

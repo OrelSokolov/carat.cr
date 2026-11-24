@@ -377,7 +377,7 @@ module Carat
         src = find_extracted(extracted, spec.name)
         return false unless src
         return false unless Artifact.binary?(src)
-        target = File.join(bin_dir, spec.name)
+        target = File.join(bin_dir, Carat.bin_artifact_name(spec.name))
         if File.exists?(target)
           Carat.warning("WARNING: OVERWRITING WITH NEW BINARY: #{target}")
           Carat.logger.log("overwrite #{target}: #{meta.name} #{meta.version} replaced previous binary (prebuilt)")

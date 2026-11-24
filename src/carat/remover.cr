@@ -52,7 +52,7 @@ module Carat
       removed = [] of String
       other_scope = @system ? "user" : "system"
       (meta.binaries.specs + meta.examples.specs).each do |spec|
-        path = File.join(bin_dir, spec.name)
+        path = File.join(bin_dir, Carat.bin_artifact_name(spec.name))
         if File.exists?(path)
           File.delete(path)
           removed << path

@@ -15,6 +15,17 @@ module Carat
     {% end %}
   end
 
+  # Имя артефакта в bin-каталоге: на Windows — с ".exe" (cmd резолвит
+  # команды через PATHEXT; файл без расширения с PATH не запускается,
+  # а при наличии устаревшего name.exe ещё и молча им проигрывает).
+  def self.bin_artifact_name(name : String) : String
+    {% if flag?(:windows) %}
+      "#{name}.exe"
+    {% else %}
+      name
+    {% end %}
+  end
+
   # A flags:/link_flags: value: a plain list applies to every OS; a mapping
   # selects by OS family — exact match, then alias (macos for darwin),
   # then "*"; first hit wins.
@@ -253,7 +264,7 @@ module Carat
       BuildPool::Job.new(bin.name, build)
     end
     BuildPool.new(dir, jobs).run
-    specs.map { |bin| File.join(out_dir, bin.name) }
+    specs.map { |bin| File.join(out_dir, Carat.bin_artifact_name(bin.name)) }
   end
 
   # Сборка одного бинарника в staged-файл + rename (прямой -o поверх
@@ -264,7 +275,7 @@ module Carat
                              warn_overwrite : Bool, os : String,
                              dep_flags : Array(String), dep_link_flags : Array(String),
                              env : Hash(String, String)) : Nil
-    target = File.join(out_dir, bin.name)
+    target = File.join(out_dir, Carat.bin_artifact_name(bin.name))
     overwritten = File.exists?(target)
     if overwritten && warn_overwrite
       warning("WARNING: OVERWRITING WITH NEW BINARY: #{target}")
@@ -288,7 +299,17 @@ module Carat
         raise Error.new("#{staged}: artifact is not a native executable (magic bytes check failed)")
       end
       {% if flag?(:windows) %}
-        File.delete(target) if File.exists?(target) # rename поверх существующего не работает
+        # rename поверх существующего не работает; запущенный exe нельзя
+        # удалить (ACCESS_DENIED), но можно переименовать в сторону —
+        # иначе carat self update не заменит сам себя.
+        if File.exists?(target)
+          begin
+            File.delete(target)
+          rescue File::Error
+            File.delete("#{target}.old") if File.exists?("#{target}.old")
+            File.rename(target, "#{target}.old")
+          end
+        end
       {% end %}
       File.rename(staged, target)
     ensure

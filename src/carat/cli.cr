@@ -126,6 +126,13 @@ module Carat
       GITHUB_TOKEN / GH_TOKEN in the environment is used for private
       repos and rate limits. `--build` forces source compilation.
 
+    Build environment:
+      `crystal build` runs with SHARD_VERSION in the environment — the
+      version carat resolved: the release tag name for a tagged install
+      (like CI injects into release builds), version+git.commit.<sha> for
+      a HEAD install. A shard can embed its version at compile time:
+        VERSION = {{ env("SHARD_VERSION") || "dev" }}
+
     Directories:
       ~/.carat/bin/                  global binaries (only entry points)
       ~/.carat/examples/             global example binaries (--with-examples)

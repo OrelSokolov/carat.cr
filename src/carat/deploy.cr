@@ -96,7 +96,7 @@ module Carat
       Dir.mkdir_p(staging)
       begin
         Carat.install_dependencies(meta, @project)
-        built = Carat.build_binaries(meta, @project, staging, warn_overwrite: false)
+        built = Carat.build_binaries(meta, @project, staging, warn_overwrite: false, version: identity)
         built.each { |bin| ensure_linux_elf(bin) }
         activate(staging, built, ds, identity)
       ensure

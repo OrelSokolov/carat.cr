@@ -42,7 +42,8 @@ module Carat
         return
       end
       bin_dir = Paths.project_bin
-      built = Carat.build_binaries(meta, Dir.current, bin_dir, @release, warn_overwrite: false)
+      built = Carat.build_binaries(meta, Dir.current, bin_dir, @release, warn_overwrite: false,
+        version: meta.version)
       Carat.logger.log("project #{@shards_command} #{meta.name} #{meta.version} -> #{bin_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
       puts "Installed #{meta.name} #{meta.version} -> #{bin_dir}"
       return unless @with_examples
@@ -51,7 +52,8 @@ module Carat
         return
       end
       examples_dir = Paths.project_examples
-      built = Carat.build_examples(meta, Dir.current, examples_dir, @release, warn_overwrite: false)
+      built = Carat.build_examples(meta, Dir.current, examples_dir, @release, warn_overwrite: false,
+        version: meta.version)
       Carat.logger.log("project examples #{@shards_command} #{meta.name} #{meta.version} -> #{examples_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
       puts "Examples -> #{examples_dir}"
     end

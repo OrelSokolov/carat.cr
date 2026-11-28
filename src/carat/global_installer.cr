@@ -91,7 +91,7 @@ module Carat
       previous = installed_version(meta.name)
       store = promote(meta, staged, identity)
       Carat.install_dependencies(meta, store)
-      build_all(meta, store, bin_dir, source, tag)
+      build_all(meta, store, bin_dir, source, tag, identity)
       File.write(Paths.current_pointer(meta.name), identity)
       Carat.logger.log("install #{meta.name} #{identity} from #{source.location} to #{bin_dir} (previous: #{previous || "none"})")
       after_system_install(bin_dir)
@@ -131,7 +131,7 @@ module Carat
       puts "Updating #{meta.name} #{installed} -> #{identity}"
       store = promote(meta, staged, identity)
       Carat.install_dependencies(meta, store)
-      build_all(meta, store, bin_dir, source, tag)
+      build_all(meta, store, bin_dir, source, tag, identity)
       File.write(Paths.current_pointer(meta.name), identity)
       Carat.logger.log("update #{meta.name} #{installed} -> #{identity} from #{source.location}")
       after_system_install(bin_dir)
@@ -146,9 +146,13 @@ module Carat
     # только зависимости. Сначала — попытка прекомпилированных ассетов
     # релиза (Prebuilt): теговая установка, GitHub-источник, не dev и не
     # --build; любая неудача внутри — тихий откат на сборку из исходников.
+    # В сборку прокидывается версия (SHARD_VERSION, см. Build.build_binaries):
+    # имя релизного тега для теговой установки (как CI вшивает в релизы),
+    # identity (version+git.commit.<sha>) для HEAD.
     private def build_all(meta : ShardMeta, store : String, bin_dir : String,
-                          source : Source, tag : String?) : Nil
+                          source : Source, tag : String?, identity : String) : Nil
       return if @only_shards
+      build_version = tag || identity
       prebuilt = false
       if @release && !@force_build && tag &&
          (gh = Prebuilt.github_repo(source.location)) &&
@@ -156,9 +160,9 @@ module Carat
         prebuilt = true
       end
       unless prebuilt
-        Carat.build_binaries(meta, store, bin_dir, @release)
+        Carat.build_binaries(meta, store, bin_dir, @release, version: build_version)
       end
-      build_examples(meta, store)
+      build_examples(meta, store, build_version)
       # GUI-приложения (`app:`) переезжают из bin_dir в ~/.carat/apps/<name>/
       # и получают иконку + нативный лаунчер.
       Apps.install(meta, store, bin_dir)
@@ -199,13 +203,13 @@ module Carat
 
     # --with-examples: build the optional examples: section too, into
     # ~/.carat/examples (separate from the PATH-facing bin dir).
-    private def build_examples(meta : ShardMeta, store : String) : Nil
+    private def build_examples(meta : ShardMeta, store : String, version : String) : Nil
       return unless @with_examples
       if meta.examples.empty?
         puts "#{meta.name}: no examples: entry in shard.yml, skipping examples"
         return
       end
-      built = Carat.build_examples(meta, store, Paths.examples_dir)
+      built = Carat.build_examples(meta, store, Paths.examples_dir, version: version)
       Carat.logger.log("examples #{meta.name} #{meta.version} -> #{Paths.examples_dir} (#{built.map { |p| File.basename(p) }.join(", ")})")
       puts "Examples -> #{Paths.examples_dir}"
     end

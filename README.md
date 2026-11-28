@@ -227,6 +227,21 @@ so shards with dependencies install as smoothly as dep-free ones.
 `prebuild:` stays for native build steps (rake/cmake/make), not for
 dependency resolution.
 
+Every `crystal build` runs with `SHARD_VERSION` in the environment — the
+version carat resolved: the release **tag name** for a tagged install (the
+same thing CI injects into release builds), `version+git.commit.<sha>` for
+a HEAD install, the shard.yml version for a local directory. A shard can
+embed its version at compile time, no git required in the build tree:
+
+```crystal
+VERSION = {{ env("SHARD_VERSION") || "0.0.0-dev" }}
+```
+
+This is how a binary built by carat reports a real version instead of a
+dev placeholder: carat never runs the project's rake/Makefile version
+steps, and `git describe` in a shallow clone can pick a sibling tag on
+the same commit — the build tree is simply not a reliable version source.
+
 Selector resolution follows crosspack's `hosts:` rules: exact OS family
 (`linux` / `darwin` / `windows`), then `*` — first hit wins. A plain list
 instead of a mapping applies to every OS. The same holds for `prebuild:`:

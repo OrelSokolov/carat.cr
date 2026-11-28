@@ -199,26 +199,33 @@ module Carat
   # warn_overwrite=false для проектной установки: перезапись ./.carat/bin —
   # нормальный цикл пересборки, WARNING только для глобальных каталогов,
   # где он защищает PATH от тихой подмены.
+  # version — версия, вшиваемая в сборку: имя релизного тега для теговой
+  # установки (как CI вшивает в релизы), identity (version+git.commit.<sha>)
+  # для HEAD, version из shard.yml для локального каталога. Прокидывается
+  # в окружение `crystal build` как SHARD_VERSION, чтобы шард мог вшить свою
+  # версию в бинарник на этапе компиляции ({{ env("SHARD_VERSION") }}).
   # Общий prebuild секции — `all: prebuild:` в binaries:/examples:
   # (см. ShardMeta::Section): один раз, а не по разу на каждый бинарник.
   def self.build_binaries(meta : ShardMeta, dir : String, bin_dir : String,
-                          release : Bool = true, warn_overwrite : Bool = true) : Array(String)
+                          release : Bool = true, warn_overwrite : Bool = true,
+                          version : String? = nil) : Array(String)
     if meta.binaries.empty?
       raise Error.new("#{meta.name}: no binaries: entry in shard.yml — nothing to build")
     end
-    build_specs(meta, meta.binaries, dir, bin_dir, release, warn_overwrite)
+    build_specs(meta, meta.binaries, dir, bin_dir, release, warn_overwrite, version)
   end
 
   # The optional examples: section — same build pipeline as binaries:, but
   # only built with --with-examples (never on a plain `carat install`).
   def self.build_examples(meta : ShardMeta, dir : String, examples_dir : String,
-                          release : Bool = true, warn_overwrite : Bool = true) : Array(String)
-    build_specs(meta, meta.examples, dir, examples_dir, release, warn_overwrite)
+                          release : Bool = true, warn_overwrite : Bool = true,
+                          version : String? = nil) : Array(String)
+    build_specs(meta, meta.examples, dir, examples_dir, release, warn_overwrite, version)
   end
 
   private def self.build_specs(meta : ShardMeta, section : ShardMeta::Section,
                                dir : String, out_dir : String, release : Bool,
-                               warn_overwrite : Bool) : Array(String)
+                               warn_overwrite : Bool, version : String?) : Array(String)
     unless shell.which("crystal")
       raise Error.new("crystal compiler not found in PATH")
     end
@@ -259,7 +266,7 @@ module Carat
     jobs = specs.map do |bin|
       build = ->(env : Hash(String, String)) {
         build_one(meta, bin, dir, out_dir, release, warn_overwrite,
-          os, dep_flags, dep_link_flags, env)
+          os, dep_flags, dep_link_flags, version, env)
       }
       BuildPool::Job.new(bin.name, build)
     end
@@ -270,11 +277,14 @@ module Carat
   # Сборка одного бинарника в staged-файл + rename (прямой -o поверх
   # запущенного бинарника падает с ETXTBSY — актуально для
   # `carat update carat`). env — CRYSTAL_CACHE_DIR воркера.
+  # version (имя тега установки / identity для HEAD) добавляется в env
+  # как SHARD_VERSION — компилятор вшивает её в бинарник через
+  # {{ env("SHARD_VERSION") }}.
   private def self.build_one(meta : ShardMeta, bin : ShardMeta::BinarySpec,
                              dir : String, out_dir : String, release : Bool,
                              warn_overwrite : Bool, os : String,
                              dep_flags : Array(String), dep_link_flags : Array(String),
-                             env : Hash(String, String)) : Nil
+                             version : String?, env : Hash(String, String)) : Nil
     target = File.join(out_dir, Carat.bin_artifact_name(bin.name))
     overwritten = File.exists?(target)
     if overwritten && warn_overwrite
@@ -292,6 +302,8 @@ module Carat
     staged = "#{target}.new"
     args += ["-o", staged, bin.main]
     begin
+      env = env.dup
+      env["SHARD_VERSION"] = version if version
       unless BuildPool.spawn_process("crystal", args, dir, env)
         raise Error.new("build failed: #{bin.name}")
       end
